@@ -7533,6 +7533,6 @@ I'll write it to a CSV file so I can verify that my final engineering script dup
 ```{r echo=TRUE, warning=FALSE, message=FALSE}
 val_train_Xy$Id = val_train_X$Id
 
-write.csv(val_train_Xy, 'data/eda_val_train_Xy.csv')
-head(read.csv('data/eda_val_train_Xy.csv'))
+saveRDS(val_train_Xy, 'data/eda_val_train_Xy.rds')
+head(readRDS('data/eda_val_train_Xy.rds'))
 ```
