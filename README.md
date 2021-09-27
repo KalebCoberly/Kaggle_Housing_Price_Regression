@@ -132,6 +132,10 @@ One-hot encoding the factors and then intelligently selecting features in the ML
 
 I treated integers and ordered factors as I did with both continuous variables and factors.
 
+#### A Note on the Data Dictionary
+
+I have only uploaded the data dictionary as received from Kaggle. I will need to update it to include entries for the new features I have engineered.
+
 ## Background
 
 [Back to top.](#top)
