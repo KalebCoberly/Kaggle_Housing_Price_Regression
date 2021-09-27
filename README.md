@@ -8,7 +8,7 @@ Wrangling, EDA, feature engineering, ML and linear regression, and hypothesis te
 
 Thus far in this project, I wrangle, explore, and engineer data in preparation for statistical and machine learning (ML) regression of county assessor data to predict residential sales prices. To complete the project, I will use a few regression models to test whether I added value with my treatment of the data. If the selected ML algorithms build models that perform significantly and meaningfully better with my engineered data than with selected "raw" data, then I can say that I have added value to the data by making it more amenable to ML.
 
-The exploratory data analysis (EDA) and feature engineering process that I have completed thus far are outlined and explained in a fair amount of detail in this overview section. I stopped short of feature selection and preprocessing for ML as I will do that next in a new notebook to be added to this project upon completion. The narrative, code, stats, and visualizations in the <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html" target="_blank">wrangle and split R notebook</a>, the <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA.html" target="_blank">EDA R notebook</a>, and associated <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/tree/main/tools" target="_blank">scripts</a> should be viewed as content that can be referred to or used for other polished documents and production processes, not as polished products themselves. You can also view the <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/blob/main/EDA_full.Rmd" target="_blank">full EDA .Rmd document here</a>.
+The exploratory data analysis (EDA) and feature engineering process that I have completed thus far are outlined and explained in a fair amount of detail in this overview section. I stopped short of feature selection and preprocessing for ML as I will do that next in a new notebook to be added to this project upon completion. The narrative, code, stats, and visualizations in the <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html" target="_blank">wrangle and split R notebook</a>, the EDA R notebooks <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html" target="_blank">part 1</a> and <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html" target="_blank">part 2</a>, and associated <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/tree/main/tools" target="_blank">scripts</a> should be viewed as content that can be referred to or used for other polished documents and production processes, not as polished products themselves. You can also view the <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/blob/main/EDA_full.Rmd" target="_blank">full EDA .Rmd document here</a>.
 
 ## Modeling and Hypothesis Test
 
@@ -60,7 +60,7 @@ I may also construct a multilinear regression "by hand" with the R <a href="http
 
 [Back to top.](#top)
 
-Thus far in the process, I <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html" target="_blank">wrangle and split in this R notebook</a>, and I <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA.html" target="_blank">explore the data and engineer features in this EDA R notebook</a>, and use <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/tree/main/tools" target="_blank">these associated scripts</a>
+Thus far in the process, I <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html" target="_blank">wrangle and split in this R notebook</a>, and I explore the data and engineer features in EDA R notebooks <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html" target="_blank">part 1</a> and <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html" target="_blank">part 2</a>, and use <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/tree/main/tools" target="_blank">these associated scripts</a>
 
 ### Auditing and Wrangling
 
@@ -84,11 +84,11 @@ That said, this process can run for a very long time, infinitely in some cases. 
 
 I sought another method and found the maximum dissimilarity method in caret, <a href="https://www.rdocumentation.org/packages/caret/versions/6.0-88/topics/maxDissim" target="_blank">maxDissim</a>. This elegant solution iteratively selects points that are most dissimilar to the sample set, running in much less time.
 
-It did, however, produce worse results than my method, according to a Wilcoxon rank-sum test. [See results below.](#comp_by_wilcox) But, that is a "rigged" scenario because it applies the same test that I p-hacked to create my subset.
+It did, however, produce worse results than my method, according to a Wilcoxon rank-sum test. <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html#comp_by_wilcox" target="_blank">results</a> But, that is a "rigged" scenario because it applies the same test that I p-hacked to create my subset.
 
 I instead implemented an adversarial validation using <a href="http://topepo.github.io/caret/available-models.html" target="_blank">caret's xgbTree</a>. In adversarial validation, you label each set in the split and see if the algorithm can tell the difference. If accuracy is 0.5, the model cannot tell the difference between one half of the split and the other, which is a good indication that your split is representative.
 
-My split method produced a much more representative split than maxDissim. Splitting again for the validation set produced results close to maxDissim, though I did not split again with maxDissim to compare. The Kaggle split far outperformed my method and maxDissim. That said, Kaggle used a 50-50 split, whereas I used a 70-30 split, which may account somewhat for the difference in accuracy variance and mean. Though they have kept their method hidden as far as I can tell, I am guessing they incorporated multifactor stratification to do so well with a classification tree. [See results below.](#comp_by_AV)
+My split method produced a much more representative split than maxDissim. Splitting again for the validation set produced results close to maxDissim, though I did not split again with maxDissim to compare. The Kaggle split far outperformed my method and maxDissim. That said, Kaggle used a 50-50 split, whereas I used a 70-30 split, which may account somewhat for the difference in accuracy variance and mean. Though they have kept their method hidden as far as I can tell, I am guessing they incorporated multifactor stratification to do so well with a classification tree. <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html#comp_by_AV" target="_blank">results</a>
 
 Both maxDissim and my method only use the continuous variables. Thus, representation is undoubtedly still inaccurate in at least some factors. An alternative method may incorporate recursive stratification.
 
@@ -98,7 +98,7 @@ I mostly focused my exploration on predicting the target variable, SalePrice. I 
 
 I duplicated the engineering process in a well-documented engineering script ("tools/engineer.R") to apply to future data. I also developed a well-documented source file ("tools/eda.R") of the EDA tool kit that I used in this document. The engineering script could definitely be merged and refactored with the wrangling script for optimal computation. I will also need to verify that the engineering script produces the same output as the EDA notebook, which I will do in the next notebook.
 
-While I focused mostly on basic regression prep, I did explore some interactions between predictor variables, and I did tell some "side stories." A few examples: examples [here](#neighbZoning), [here](#totbathBsmtbath), [here](#garbltControl), and [here](#saletypeDate).
+While I focused mostly on basic regression prep, I did explore some interactions between predictor variables, and I did tell some "side stories." A few examples: examples <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html#neighbZoning" target="_blank">here</a>, <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#totbathBsmtbath" target="_blank">here</a>, <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#garbltControl" target="_blank">here</a>, and <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#saletypeDate" target="_blank">here</a>.
 
 #### Continuous Variables
 
@@ -166,4 +166,4 @@ Student's t-test: <a href="https://www.rdocumentation.org/packages/stats/version
 
 Wilcoxon rank-sum test: <a href="https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test" target="_blank">https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test]</a>
 
-[See loaded packages below.](libraries)
+<a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html#libraries" target="_blank">See loaded packages.</a>
