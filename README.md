@@ -22,7 +22,7 @@ I will build the models and conduct hypothesis tests in a notebook to be added u
 
 I will pool the errors within each group rather than grouping by ML algorithm and running a separate hypothesis test for each algorithm. This will avoid "p-hacking" with multiple tests.
 
-If the errors warrant it (e.g., they are normally distributed or can be made to be normally distributed), I will use a simple one-tailed <a href="https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/t.test" target="_blank">Student's t-test</>. If not, I will use a <a href="https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test" target="_blank">Wilcoxon rank-sum test</a> (if warranted), which is a stochastic hypothesis test that is valid for data that is not normally distributed. Pooling the errors of multiple models will likely make the distribution polymodal, so the rank-sum test will probably be necessary.
+If the errors warrant it (e.g., they are normally distributed or can be made to be normally distributed), I will use a simple one-tailed <a href="https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/t.test" target="_blank">Student's t-test</a>. If not, I will use a <a href="https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test" target="_blank">Wilcoxon rank-sum test</a> (if warranted), which is a stochastic hypothesis test that is valid for data that is not normally distributed. Pooling the errors of multiple models will likely make the distribution polymodal, so the rank-sum test will probably be necessary.
 
 ### Scaling Errors for Training vs. Comparison
 
