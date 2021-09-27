@@ -2,6 +2,8 @@
 
 Wrangling, EDA, feature engineering, ML and linear regression, and hypothesis testing in R notebooks.
 
+Please note that you will need to download the HTML files of the notebooks with my analysis and open them in a browser. They are too big for GitHub to display.
+
 <a id = "top"></a>
 
 # Overview
