@@ -1,5 +1,5 @@
 ---
-title: "Wrangline and Splitting for Housing Price Regression"
+title: "Wrangling and Splitting for Housing Price Regression"
 author: "Kaleb Coberly"
 date: "`r format(Sys.time(), '%B %d, %Y')`"
 output:
@@ -111,7 +111,7 @@ I mostly focused my exploration on predicting the target variable, SalePrice. I 
 
 I duplicated the engineering process in a well-documented engineering script ("tools/engineer.R") to apply to future data. I also developed a well-documented source file ("tools/eda.R") of the EDA tool kit that I used in this document. The engineering script could definitely be merged and refactored with the wrangling script for optimal computation. I will also need to verify that the engineering script produces the same output as this notebook, which I will do in the next notebook.
 
-While I focused mostly on basic regression prep, I did explore some interactions between predictor variables, and I did tell some "side stories." A few examples: examples [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html#neighbZoning){target="blank"}, [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#totbathBsmtbath), [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#garbltControl), and [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#saletypeDate).
+While I focused mostly on basic regression prep, I did explore some interactions between predictor variables, and I did tell some "side stories."
 
 #### Continuous Variables
 
