@@ -2,7 +2,9 @@
 
 Wrangling, EDA, feature engineering, ML and linear regression, and hypothesis testing in R notebooks.
 
-**Please note that you will need to download the HTML files of the notebooks with my analysis and open them in a browser.** They are too big for GitHub to display. *Alternatively, you can download the .Rmd files and knit them from R-Studio to a new HTML, PDF, or Word document.* In that case, use <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/blob/main/EDA_full.Rmd" target="_blank">the full EDA notebook</a>.
+**Please note that you will need to download the HTML files of the notebooks with my analysis and open them in a browser.** They are too big for GitHub to display.
+
+**Alternatively, you can download the .Rmd files and knit them from R-Studio to a new HTML, PDF, or Word document.** In that case, use <a href="https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/blob/main/EDA_full.Rmd" target="_blank">the full EDA notebook</a>.
 
 <a id = "top"></a>
 
