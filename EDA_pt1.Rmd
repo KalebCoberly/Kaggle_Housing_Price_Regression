@@ -21,7 +21,7 @@ output:
 
 [See the upstream wrangle and split notebook here.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html){target="_blank"}
 
-[See the project overview in the README.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html){target="_blank"}
+[See the project overview in the README.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/README.md){target="_blank"}
 
 # Diving In
 
