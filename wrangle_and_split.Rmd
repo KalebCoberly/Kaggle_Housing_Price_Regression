@@ -1,0 +1,673 @@
+---
+title: "Wrangline and Splitting for Housing Price Regression"
+author: "Kaleb Coberly"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_depth: 5
+    toc_float:
+      collapsed: false
+    number_sections: true
+    code_folding: show
+  html_notebook: default
+  pdf_document: default
+---
+
+<a id="top"></a>
+
+# Overview
+
+In this document, I wrangle, explore, and engineer data in preparation for statistical and machine learning (ML) regression of county assessor data to predict residential sales prices. I will use a few regression models to test whether I added value with my treatment of the data. If the selected ML algorithms build models that perform significantly and meaningfully better with my engineered data than with selected "raw" data, then I can say that I have added value to the data by making it more amenable to ML.
+
+The exploratory data analysis (EDA) and feature engineering process (excluding preprocessing steps like min-max scaling) are outlined and explained in a fair amount of detail in this overview section. The narrative, code, stats, and visualizations in the rest of the document and associated scripts should be viewed as content that can be referred to or used for other polished documents and production processes, not as polished products themselves.
+
+## Modeling and Hypothesis Test
+
+[Back to top.](#top)
+
+I will build the models and conduct hypothesis tests in a following notebook. I will compare the prediction errors of the models trained on the "raw" control data to the prediction errors of the models trained on the experimental engineered data.
+
+*Null hypothesis:* Feature engineering did not lower mean errors.
+
+*Alternative hypothesis:* Feature engineering lowered mean errors.
+
+I will pool the errors within each group rather than grouping by ML algorithm and running a separate hypothesis test for each algorithm. This will avoid "p-hacking" with multiple tests.
+
+If the errors warrant it (e.g., they are normally distributed or can be made to be normally distributed), I will use a simple one-tailed [Student's t-test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/t.test){target="_blank"}. If not, I will use a [Wilcoxon rank-sum test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test){target="_blank"} (if warranted), which is a stochastic hypothesis test that is valid for data that is not normally distributed. Pooling the errors of multiple models will likely make the distribution polymodal, so the rank-sum test will probably be necessary.
+
+### Scaling Errors for Training vs. Comparison
+
+I could apply a log10 transformation to sales prices in order to scale errors proportionally to the sales prices, which would avoid overweighting errors on pricier houses. This would have the added benefit of making the target variable more normally distributed and thus better fit to linear regression and ML algorithms that perform better with normally distributed variables.
+
+However, I found that a natural logarithm better normalized the target variable in the training set, according to the results of a [Shapiro-Wilk normality test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/shapiro.test){target="_blank"}. So, I will need to divide the errors by the values (error/log(SalePrice)), making errors a percentage. Rather than go with the sensible log10 scale anyway, I will use this opportunity to get "under the hood" of the ML algorithms a little bit and write my own summary function to adjust the errors.
+
+I will use the Root Mean Squared Error (RMSE) of these adjusted errors in model training and evaluation with both the control data and the experimental data. Taking the squared errors penalizes greater errors (though not pricier errors, since the errors are measured as a percentage). Taking the square root of the mean re-standardizes the distance between model mean errors for a "flatter" comparison of models in training.
+
+To compare the experimental errors to the control errors for the hypothesis test, I will reverse the log transformation of the experimental predictions. I will then divide the errors by the true target value for both groups.
+
+Though I will pool errors to conduct a single test of my overall hypothesis, I may also use a few hypothesis tests to explore the results. In that case, I will only conduct a hypothesis test between like ML models. For instance, I will test how the results of a Random Forest (RF) model trained on the control data compare to the results of a RF model trained on the experimental data. But, I will not test an RF model against a K-Nearest-Neighbors (KNN) model. I will, of course, generally compare models created with different algorithms, just not as a hypothesis test.
+
+### Model and Feature Selection
+
+In preparation for this project, I interviewed a home appraiser. I wanted to find out which features appraisers typically consider and get a sense of their analytical methods. This will help me construct a control data set and select test ML algorithms.
+
+Based on that discussion, I made a list of features to use to train the control models. Other than basic auditing/wrangling and scaling, I will use these features as is. The results of the exploration and feature engineering in this document will feed into selection of the experimental data set.
+
+The point of this exercise is to measure how well I prepare data for ML and statistical use, not to attempt to recreate what a human appraiser does. That said, I identified three ML algorithms that sort of emulate what an appraiser does.
+
+I selected RF because a decision tree groups like observations as an appraiser might group like houses to generate comparisons ("comps"). Also, a decision tree doesn't rely on standardized data, so it puts the control data and the engineered data on more level ground.
+
+KNN also clusters observations into data "neighborhoods" in a similar way that appraisers run comps. While I may min-max scale the control data for KNN to give it sensible distance measures, I do not see the lack of normalization to necessarily be a disadvantage to the control data in KNN. Outliers may aid intelligent clustering in a multivariate problems. For this reason, I may choose to use some less-transformed features in the experimental set for KNN in an additional informal test to explore this idea.
+
+Lastly, Lasso regression intelligently avoids overfit by penalizing each additional feature. This more closely emulates what a human appraiser does by adding and subtracting value with each feature. The engineered data will be at a distinct advantage, however, as I have engineered features with an eye to linear regression (mainly normalizing/Winsorizing continuous variables and identifying insignificant factor levels).
+
+I both transformed and Winsorized the scale of the target variable, SalePrice. I will apply the transformation to the target variable in the test set, but not Winsorization as it is not a process you can reverse in a vectorized fashion. I will train the Lasso regression with the Winsorized target to achieve an optimal fit, but test without Winsorizing the target.
+
+I will use [caret](https://cran.r-project.org/web/packages/caret/index.html){target="_blank"} for ML, preprocessing (min-max scaling, imputation), and feature selection. I will keep preprocessing minimal (e.g., forgo decomposition methods like principal component analysis) as I want to test the efficacy of the "manual" engineering I have done before such steps.
+
+I may also construct a multilinear regression "by hand" with the R [stats](https://stat.ethz.ch/R-manual/R-devel/library/stats/html/00Index.html){target="_blank"} package, which will allow me to explicitly create variable interactions.
+
+## EDA and Feature Engineering
+
+[Back to top.](#top)
+
+In this document, I wrangle and split the data. [See the downstream EDA and feature engineering notebook here.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html){target="_blank"} That notebook does not include the ML and overall hypothesis test, which is to come in a later notebook upon completion.
+
+### Auditing and Wrangling
+
+Though I do not document the auditing process, the wrangling script ("tools/wrangle.R") I built as a result documents the treatments I made to the data before splitting and exploring it. This treatment mainly consists of setting data types, standardizing factor levels, checking for internal consistencies, and imputing missing values that can logically be deduced. I will impute remaining missing values using caret in the ML phase.
+
+The script should work on future data (e.g. the test set), though some issues may emerge that are idiosyncratic to the new set. I will test it out when I move on to ML. That said, I did use the wrangling script to create summary objects that aided the auditing process. As such, the script constructs and returns a lot of unnecessary data; it can certainly be trimmed and refactored.
+
+### Train-Test Split
+
+I split the data into training, validation, and testing sets. Even though I will use cross-validation while training the models, I set aside a validation set so that I would have ample space to explore and try out ideas before testing. I used a 70-30 split in two rounds so that the testing set is 30% of the set I have to work with, the validation set is 21% (0.3 \* 0.7), and the training set is 49% (0.7 \* 0.7).
+
+I was especially concerned with representation across all variables. A random sample of the index did not ensure a representative sample. The more features you have, the more confident you can be that one or more of them are *not* representative with a random split. I found methods to stratify, but only by a single discrete variable at a time, which also did not produce representative splits.
+
+To test this, I used the [Wilcoxon rank-sum test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test){target="_blank"} to compare the split subsets for each continuous feature. This as a non-parametric test and is thus suited to testing data that is not guaranteed to be normalized, as was the case before exploration and engineering. It simply finds the distance between each point in one set and each point in the other set. Then it uses a parametric test to determine if the mean distance differs significantly from 0. Because the objective is to ensure representation and the null hypothesis of this test is that the sets do not differ signficantly, we want to fail to reject the null hypothesis. The criterion, then, is a p-value greater than alpha, which ought to be set high to have higher confidence in the representativity of the split.
+
+From this, I built a naive data set splitter (in "tools/split.R") that randomly samples observations then applies the Wilcoxon rank-sum test to each continuous feature. Should one feature fail to meet the criterion for representativity, the script resamples and tries again.
+
+This is unabashedly aggressive "p-hacking" or "data dredging," but that is not actually a problem here. We already know the subsets come from the same superset, and we are not concerned with being confident one way or another about this hypothesis. The objective is simply to create subsets that *appear* to come from the same superset, subsets that are *representative*.
+
+That said, this process can run for a very long time, infinitely in some cases. As with the wrangling script, I built in some extraneous processes that helped monitor the process, and it certainly can be refactored for better performance. Refactoring it will not really mitigate the underlying issue of brute force -- worse than brute force as random samples can repeat. You could modify it to return the "best" split after a given amount of time running.
+
+I sought another method and found the maximum dissimilarity method in caret, [maxDissim](https://www.rdocumentation.org/packages/caret/versions/6.0-88/topics/maxDissim){target="_blank"}. This elegant solution iteratively selects points that are most dissimilar to the sample set, running in much less time.
+
+It did, however, produce worse results than my method, according to a Wilcoxon rank-sum test. [See results here.](#comp_by_wilcox){target="_blank"} But, that is a "rigged" scenario because it applies the same test that I p-hacked to create my subset.
+
+I instead implemented an adversarial validation using [caret's xgbTree](http://topepo.github.io/caret/available-models.html){target="_blank"}. In adversarial validation, you label each set in the split and see if the algorithm can tell the difference. If accuracy is 0.5, the model cannot tell the difference between one half of the split and the other, which is a good indication that your split is representative.
+
+My split method produced a much more representative split than maxDissim. Splitting again for the validation set produced results close to maxDissim, though I did not split again with maxDissim to compare. The Kaggle split far outperformed my method and maxDissim. That said, Kaggle used a 50-50 split, whereas I used a 70-30 split, which may account somewhat for the difference in accuracy variance and mean. Though they have kept their method hidden as far as I can tell, I am guessing they incorporated multifactor stratification to do so well with a classification tree. [See results here.](#comp_by_AV){target="_blank"}
+
+Both maxDissim and my method only use the continuous variables. Thus, representation is undoubtedly still inaccurate in at least some factors. An alternative method may incorporate recursive stratification.
+
+### Exploratory Data Analysis (EDA) and Feature Engineering
+
+I mostly focused my exploration on predicting the target variable, SalePrice. I developed a standard process for handling different kinds of variables, both to engineer them and to visualize them.
+
+I duplicated the engineering process in a well-documented engineering script ("tools/engineer.R") to apply to future data. I also developed a well-documented source file ("tools/eda.R") of the EDA tool kit that I used in this document. The engineering script could definitely be merged and refactored with the wrangling script for optimal computation. I will also need to verify that the engineering script produces the same output as this notebook, which I will do in the next notebook.
+
+While I focused mostly on basic regression prep, I did explore some interactions between predictor variables, and I did tell some "side stories." A few examples: examples [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html#neighbZoning){target="blank"}, [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#totbathBsmtbath), [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#garbltControl), and [here](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt2.html#saletypeDate).
+
+#### Continuous Variables
+
+For continuous variables, I sought the best normalizing scale transformation and Winsorization. In doing so, I prioritized correlations to SalePrice. I skipped multivariate Winsorization, which would have aided straightforward linear regression but may have hindered clustering and interactions between variables. I may choose to do targeted multivariate Winsorization in the next phase as I select and preprocess the variables for each different ML algorithm.
+
+I iterated through a list of potential transformation functions and used [Shapiro-Wilk normality test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/shapiro.test){target="_blank"} to determine which function best normalized the variable. Again, this was a valid form of p-hacking in that I was unconcerned about the normality of ground truth and only needed the quality of normality in the variables. However, I naively excluded 0 values to avoid throwing an error logarithmic transformations, but that still transforms 1s into 0s, rendering logs useless for variables with a large number of 1s. Fortunately, there were other transformation functions. I did not implement more dynamic transformation functions like Box-Cox and Yeo-Johnson.
+
+I also manually estimated the best Winsorization using the same normality test and a QQ plot. I hardcoded the upper and lower limit values into the engineering script, rather than using the percentiles, to avoid leakage into the test set.
+
+I could have automated this process more, but I wanted to open it up and inspect it to convey a better sense for what I was doing and whether it was a sensible thing to do. I may also have developed a more robust measure of normality, including more metrics like kurtosis.
+
+For variables in which a 0 indicates a missing feature, I normalized only the non-zero set. The idea was that it might aid regression when the variable is put into interaction with its missingness.
+
+I also determined whether simply binarizing the presence of a feature would better correlate to sale price than a linear regression of the full variable.
+
+To verify that my transformations and modifications produced sensible outcomes, I visualized at each step.
+
+As mentioned above, I applied a natural log to SalePrice because it "best" normalized the variable, whereas a log10 transformation would have been more sensible. I will mitigate this when I write a custom summary function to train with. But, similarly, for other variables a more sensible transformation might have wiser to use than the one I used. For instance, measures of area may most sensibly be transformed to their square-root, but a different function have "best" normalized the data in the training set. I went with the function that my algorithm spit out here, but I may return to the question in the ML phase and compare sensible transformations to "optimal" transformations.
+
+In some cases, my treatment of the data may have constituted overfitting (e.g. log(sqrt(variable))), but I often went with it as I am not concerned as much with the best outcome as with seeing what happens when conventional wisdom is ignored. I will pay attention in the next phase of modeling to whether those variables are more duds than their training set correlations implied they might be.
+
+#### Factors
+
+As with continuous variables, I developed a standard approach to exploring factors. It was decidedly less involved exploration and engineering.
+
+For each factor, I summarized sale price by factor levels, both in table form and in a plot. I also automated iterative hypothesis testing for significant differences in sale prices between levels, identifying levels that differed significantly than another level. This was only for exploration purposes and should not be used to model, as it is an invalid form of p-hacking. I chose not to calculate effect size for this reason, and because I visualized it to some extent with notched boxplots.
+
+One-hot encoding the factors and then intelligently selecting features in the ML phase will suss this out anyway. At that point, I will also determine if simply binarizing the presence of a feature better predicts price.
+
+#### Integers and Ordered Factors
+
+I treated integers and ordered factors as I did with both continuous variables and factors.
+
+## Background
+
+[Back to top.](#top)
+
+I downloaded the data from [this Kaggle competition](https://www.kaggle.com/c/house-prices-advanced-regression-techniques){target="_blank"}. Kaggle acquired the set from a university professor who discussed the set and his treatment of it in [this article](http://jse.amstat.org/v19n3/decock.pdf){target="_blank"}. He cleaned up the set quite a bit. For instance, he removed the city's modeling variables, restricted records to residential sales, and removed previous sales of the same home within the given period.
+
+## Technical Choices
+
+[Back to top.](#top)
+
+I wanted to do this project completely in R because I want to try out the caret package for the ML. Also, it is a forgiving enough data set that I do not need to do too much wrangling, so there is no need to use Python when R is so fit for analysis and visualization. The light amount of wrangling is a good opportunity to get more comfortable with R beyond ggplot2.
+
+I am also choosing to do it completely on my PC in R-Studio because I like the robust features of R-Studio and because I want to get a sense of my computer's performance. Some of the compute, like ML training, may be best done on a cloud server, but that will be another project.
+
+### A Note on the Code
+
+Much of the code in this document is repeated and could be wrapped into functions, but I chose to leave it exposed and paste it in for each variable so I could easily play with it with each use. Likewise, many of the functions in the scripts wrap a lot of now-extraneous processes and objects that were useful as I inspected the processes while I built them. These could be stripped down. The "tools/engineer.R" script is pretty streamlined, though it could be combined with the "tools/wrangle.R" script and refactored.
+
+## References
+
+Dean De Cock:[http://jse.amstat.org/v19n3/decock.pdf](http://jse.amstat.org/v19n3/decock.pdf){target="_blank"}
+
+Kaggle: [https://www.kaggle.com/c/house-prices-advanced-regression-techniques](https://www.kaggle.com/c/house-prices-advanced-regression-techniques){target="_blank"}
+
+Shapiro-Wilk normality test: [https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/shapiro.test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/shapiro.test){target="_blank"}
+
+Student's t-test: [https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/t.test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/t.test){target="_blank"}
+
+Wilcoxon rank-sum test: [https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test](https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/wilcox.test){target="_blank"}
+
+[See loaded packages below.](#libraries)
+
+# Diving In
+
+[Back to top.](#top)
+
+## Notes on Data Dict
+
+Are there a lot of duplexes and 2-family conversions? Can/should I ignore them? What about agricultural/commercial/industrial? Floating Village Residential?
+
+Alley NA codes no alley access, not missing value.
+
+LandContour and LandSlope are similar. BlgdType, HouseStyle, MSSubClass also overlap.
+
+Condition1/Condition2 have interesting relationship.
+
+YearRemodAdd same as YearBuilt if no remodel.
+
+Some features only have values conditional to other values (e.g. Cond1/Cond2, Masonry veneer type, etc.)
+
+BsmtQual is actually height
+
+Proportion of beds/baths/kitchens above grade might interact with number of said rooms.
+
+SaleType and SaleCondition will probably be significant
+
+## Libraries and Source Files
+
+<a id="libraries"></a>
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(tidyverse)
+# library(dict) # Still not found after installation
+library(container) # For Dict class
+library(useful) # For simple.impute
+library(comprehenr) # For list comprehension
+library(GGally)
+library(reshape2)
+library(gridExtra)
+library(gplots)
+library(DescTools) # For df summary
+library(robustHD) # For df summary
+library(caret)
+library(effsize) # For Cohen's d
+
+source('tools/wrangle.R')
+source('tools/eda.R')
+source('tools/engineer.R')
+source('tools/split.R')
+
+# SEED = 65466
+```
+
+## Loading Data
+
+Here's the set straight from Kaggle.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# https://www.kaggle.com/c/house-prices-advanced-regression-techniques/data
+kaggle_train_set = read.csv(file = 'data/train.csv')
+kaggle_test_set = read.csv(file = 'data/test.csv')
+
+# str(kaggle_train_set)
+```
+
+# Wrangling
+
+[Back to top.](#top)
+
+Below runs a wrangling script I built for this set. First, I removed duplicates. Then, I set the feature data types and standardized the factor levels. Then, I explicitly set missing values to a missingness value where it is known, assumed, or implied (by related features) to indicate a missing feature in reality rather than a missing value in the data. Finally, I checked some logic between features, enforcing some rules.
+
+For instance, I dropped a couple of records in which the house style was explicitly one-story but for which there was a value for second-story square footage. I was confident that square footage would be an important predictive feature, so it was worth dropping the records to remove noise from these features. In similar cases where the logic of feature values didn't add up but I wasn't sure I would even end up keeping the features, I made a note to remove the records from the training set if the features turn out to be important. Specifically, I'll remove the one record where land contour is level but land slope is severe and the five records where masonry veneer type is qualified but masonry veneer square footage is 0 or missing, but only if those features are worth keeping.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# source('tools/wrangle.R')
+wrangle_lst = wrangle(df = kaggle_train_set)
+kaggle_train_set = wrangle_lst$df
+wrangle_lst = wrangle(df = kaggle_test_set)
+kaggle_test_set = wrangle_lst$df
+rm(wrangle_lst)
+```
+
+# Split
+
+[Back to top.](#top)
+
+## Validate Kaggle Split
+
+Are the train and test sets representative of the same population? That is, is the train set adequate to train a model to test on the test set? I'll validate with two methods: Wilcoxon rank-sum test and adversarial validation.
+
+### Wilcoxon rank-sum test
+
+This as a non-parametric test and is thus suited to testing data that is not guaranteed to be normalized, as is the case before exploration and engineering. It simply finds the distance between each point in one set and each point in the other set. Then it uses a parametric test to determine if the mean distance differs significantly from 0. Because the objective is to ensure representation and the null hypothesis of this test is that the sets do not differ signficantly, we want to fail to reject the null hypothesis. The criterion, then, is a p-value greater than alpha, which ought to be set high to have higher confidence in the representativity of the split.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+double_feats_lst = colnames(select(kaggle_train_set, where(is.double)))
+
+Kag_validate_split_lst = validate_split(
+  train = kaggle_train_set,
+  test = kaggle_test_set,
+  feats_lst = double_feats_lst,
+  y_cols = list('SalePrice'),
+  alpha = 0,
+  target_alpha = 0
+)
+
+Kag_validate_split_lst
+```
+
+Using the Wilcoxon rank-sum test to estimate how well each continuous variable in the train set seems to represent the same superset as the corresponding variable in the test set, we find that most features do not pass the test. Because we're after no significant difference, we want higher p-values to ensure better representation. Only MiscVal has p > 0.9 (90% chance of incorrectly rejecting the null that these sets represent the same population), whereas three variables have p < 0.1, very probably not representative of the same set. Only 8 out of the 20 tested variables even have p > 0.5.
+
+### Adversarial Validation
+
+In adversarial validation, you label each set in the split and see if the algorithm can tell the difference. If accuracy is 0.5, the model cannot tell the difference between one half of the split and the other, which is a good indication that your split is representative.
+
+We can inspect the results of about 100 different models with XGBoost. They all seem to have trouble differentiating between Kaggle's train and test sets, a good indication that the split is representative. We'll return to visualize this against the splits I create.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# # Uncomment to revalidate.
+# kag_split_av = adversarial_validation(
+#   train = select(kaggle_train_set, -c('Id', 'SalePrice')),
+#   test = select(kaggle_test_set, -c('Id'))
+# )
+# saveRDS(kag_split_av, 'data/kag_split_av.rds')
+
+kag_split_av = readRDS('data/kag_split_av.rds')
+
+summary(kag_split_av$results$Accuracy)
+```
+
+## Train-Test Split
+
+[Back to top.](#top)
+
+For the purposes of this project, I treat the Kaggle training set as the full set to use for training and testing, because I won't get access to the Kaggle test set. So, I make a 70-30 train-test split from the Kaggle training set, then I make another 70-30 train-validate split from the new training set.
+
+I'll later use cross-validation to tune the algorithm, so a validation set isn't technically necessary. But, having a validation set allows me to try more than one algorithm. There is enough data to make the extra split, and once I select a tuned model, I can retrain it on the full training set before testing it on the final test set. (And, for the Kaggle competition, I can repeat the process once again to build my final submission.)
+
+### maxDissim vs. Random Search with Wilcoxon Rank-Sum
+
+How to make sure each feature of the split is optimally representative of the superset? I tried two different methods to split: caret's maxDissim, and a random search with the Wilcoxon rank-sum test to validate across multiple variables.
+
+#### maxDissim
+
+I tried using caret's `maxDissim` for the split. It's an elegant approach to this problem. Simply take a small random sample to create a seed set, then find the observation in the superset that is most dissimilar to the seed set and add it to the seed set. Repeat until the seed set has grown to the size you want it.
+
+But, how do we know it worked? As we have not normalized the data, we can use the Wilcoxon rank-sum test to check whether all of the features in the train and test sets seem to have come from the same superset. If so, they are similar as far as their feature averages are concerned, and ostensibly, they are representative of the superset. A higher alpha indicates more similarity between sets on that feature.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# # Uncomment to replit and rewrite.
+# full_set_len = nrow(kaggle_train_set)
+# test_set_len = as.integer(.3 * full_set_len)
+# num_set = select(kaggle_train_set, where(is.double))
+# seed_idx = sample(x = full_set_len, size = 15)
+# seed_set = num_set[seed_idx, ]
+# pool_set = num_set[-seed_idx, ]
+# 
+# test_set = maxDissim(
+#   a = seed_set,
+#   b = pool_set,
+#   n = test_set_len,
+#   obj =sumDiss
+# )
+# 
+# write.csv(x = test_set, file = 'data/maxDissim_split_idx.csv')
+
+# Read previous split.
+test_set = read.csv(file = 'data/maxDissim_split_idx.csv')
+test_set = test_set$x
+
+y_cols = c('SalePrice')
+id_cols = c('Id')
+cont_feats_lst = colnames(select(kaggle_train_set, where(is.double)))
+cont_feats_lst = c(cont_feats_lst, y_cols)
+feats_p_val_lst = vector(mode = 'list', length = length(cont_feats_lst))
+names(feats_p_val_lst) = cont_feats_lst
+
+maxD_validate_split_lst = validate_split(
+  train = kaggle_train_set[-test_set, ],
+  test = kaggle_train_set[test_set, ],
+  feats_lst = cont_feats_lst,
+  y_cols = y_cols,
+  feats_p_val_lst = feats_p_val_lst,
+  alpha = 0,
+  target_alpha = 0 
+)
+print("p-values of maxDissim:")
+print(maxD_validate_split_lst$p_vals)
+```
+
+We can be pretty confident in the split on some of these features (e.g. p > .9), but we can also be pretty confident that the train and test sets imply very different supersets according to some of these features (e.g. p < .1). Many are ambiguous. I ran this many times and came up with similar results each time. (I'm p-hacking again, but it's for exploration, not for a hypothesis test that I need to rely on.)
+
+What about adversarial Validation?
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# # Uncomment to revalidate.
+# maxD_split_av = adversarial_validation(
+#   train = select(kaggle_train_set[-test_set, ], -c('Id', 'SalePrice')),
+#   test = select(kaggle_train_set[test_set, ], -c('Id', 'SalePrice'))
+# )
+# saveRDS(maxD_split_av, 'data/maxD_split_av.rds')
+
+maxD_split_av = readRDS('data/maxD_split_av.rds')
+
+summary(maxD_split_av$results$Accuracy)
+```
+
+XGBoost is able to somewhat detect the difference between the train and test sets.
+
+Also, maxDissim only takes numeric features into account. Since 20 out of 80 features in this set are numeric, perhaps this split method will at least improve the representativity of the factors as well. Or, perhaps it will bias the split toward models that rely more heavily on the numeric variables.
+
+#### Random Search with Wilcoxon Rank-Sum
+
+I've found ways to create a stratified sample, but only using a single factor.
+
+Having found no other built-in way to create a well-stratified/representative split across multiple features, I wrote a simple algorithm to ensure the random sample used for the split results in sets that are relatively representative. It simply takes a random sample and runs the same validation as above. If a single feature fails the Wilcoxon test according to the alpha we choose, resample and try again until finding a sample in which all features have p > alpha.
+
+This algorithm is subject to the same problem as maxDissim of only considering numeric features. And, it typically runs much longer (depending on alpha), potentially infinitely. But, it does produce an ostensibly more representative split. [See the Github repo I created for it for further discussion.](https://github.com/KalebCoberly/train_test_split_R){target="_blank"}
+
+One could use maxDissim within this algorithm, using maxDissim to create each sample rather than a simple random sample. But, compute would become even more prohibitive, maxDissim running orders of magnitude longer than taking a random sample. You could reduce compute by reducing alpha and/or using a low value for randomFrac in maxDissim to shrink the subset within which to search for the maximum dissimilar data point. I chose to simply use the split I found through my algorithm.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# ##### Uncomment this chunk to split again.
+# # Otherwise, run next chunk to read in the results of last split. #####
+
+
+# # Treating Kaggle train set as the full set,
+# # split the final test set out,
+# # and split the validation set out from that.
+# # That way can validate a couple of models, even if using cross-validation.
+# # Write to CSV files to keep same random split between uses.
+#
+#
+# # Using data.frame, which maintains index in some operations and not in others,
+# # so keeping Id column to be safe.
+# y_cols = c('SalePrice')
+# id_cols = c('Id')
+# cont_feats_lst = colnames(select(wrangle_lst$df, where(is.double)))
+# cont_feats_lst = c(cont_feats_lst, y_cols)
+# alpha = 0.5
+# target_alpha = 0.9
+# 
+# full_split_lst = train_test_split(
+#   df = wrangle_lst$df,
+#   y_cols = y_cols,
+#   id_cols = id_cols,
+#   feats_lst = cont_feats_lst,
+#   alpha = alpha,
+#   target_alpha = target_alpha
+# )
+# # > names(full_split_lst)
+# # [1] "train_X" "train_y" "test_X"  "test_y"
+# 
+# val_split_lst = train_test_split(
+#   df = merge(
+#     full_split_lst$train_X,
+#     full_split_lst$train_y,
+#     by = id_cols,
+#     all = TRUE
+#   ),
+#   y_cols = y_cols,
+#   id_cols = id_cols,
+#   feats_lst = cont_feats_lst,
+#   alpha = alpha,
+#   target_alpha = target_alpha
+# )
+# # > names(val_split_lst)
+# # [1] "train_X" "train_y" "test_X"  "test_y"
+
+# # Uncomment the following line to write new split to files.
+
+# # # Write to CSV files to keep same random split between uses.
+# # file_path = 'data/'
+# # write_sets(set_lst = full_split_lst, prefix = 'full_', file_path = file_path)
+# # write_sets(set_lst = val_split_lst, prefix = 'val_', file_path = file_path)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Read in saved splits.
+# "_re_" because these are more rigorous splits than the ones I did a
+# once-through EDA with initially while the splitter ran with higher criteria.
+full_train_X = read.csv(file = 'data/full_re_train_X.csv')
+full_train_y = read.csv(file = 'data/full_re_train_y.csv')
+full_test_X = read.csv(file = 'data/full_re_test_X.csv')
+full_test_y = read.csv(file = 'data/full_re_test_y.csv')
+val_train_X = read.csv(file = 'data/val_re_train_X.csv')
+val_train_y = read.csv(file = 'data/val_re_train_y.csv')
+val_test_X = read.csv(file = 'data/val_re_test_X.csv')
+val_test_y = read.csv(file = 'data/val_re_test_y.csv')
+
+# Re-wrangle to set data types again after reading in fresh from CSV.
+# Only need the types reset, but I nested that function in wrangle() to avoid
+# cluttering my workspace with all the wrangle subroutines. Should have just
+# deleted them.
+full_train_X_wrangle_lst = wrangle(df = full_train_X)
+full_train_X = full_train_X_wrangle_lst$df
+full_test_X_wrangle_lst = wrangle(df = full_test_X)
+full_test_X = full_test_X_wrangle_lst$df
+full_train_y$SalePrice = as.numeric(full_train_y$SalePrice)
+full_test_y$SalePrice = as.numeric(full_test_y$SalePrice)
+
+val_train_X_wrangle_lst = wrangle(df = val_train_X)
+val_train_X = val_train_X_wrangle_lst$df
+val_test_X_wrangle_lst = wrangle(df = val_test_X)
+val_test_X = val_test_X_wrangle_lst$df
+val_train_y$SalePrice = as.numeric(val_train_y$SalePrice)
+val_test_y$SalePrice = as.numeric(val_test_y$SalePrice)
+
+rm(full_train_X_wrangle_lst, full_test_X_wrangle_lst, val_train_X_wrangle_lst,
+   val_test_X_wrangle_lst)
+```
+
+#### Compare Representation
+
+##### By Wilcoxon p-values
+
+<a id="comp_by_wilcox"></a>
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Get p-values for each variable. (i.e. How representative is this split?)
+# Greater p-value is better in this case, representing the risk of incorrectly
+# rejecting the null hypothesis that the sets came from the same superset.
+
+# Using data.frame, which maintains index in some operations and not in others,
+# so keeping Id column to be safe.
+y_cols = c('SalePrice')
+id_cols = c('Id')
+# Not excluding continuous variables that were excluded in split testing.
+cont_feats_lst = colnames(select(kaggle_train_set, where(is.double)))
+cont_feats_lst = c(cont_feats_lst, y_cols)
+alpha = 0
+target_alpha = 0
+feats_p_val_lst = vector(mode = 'list', length = length(cont_feats_lst))
+names(feats_p_val_lst) = cont_feats_lst
+
+full_validate_split_lst = NULL
+full_validate_split_lst = validate_split(
+  train = merge(x = full_train_y, y = full_train_X, by = c('Id')),
+  test = merge(x = full_test_y, y = full_test_X, by = c('Id')),
+  feats_lst = cont_feats_lst,
+  y_cols = y_cols,
+  feats_p_val_lst = feats_p_val_lst,
+  alpha = alpha,
+  target_alpha = target_alpha 
+)
+
+val_validate_split_lst = NULL
+val_validate_split_lst = validate_split(
+  train = merge(x = val_train_y, y = val_train_X, by = c('Id')),
+  test = merge(x = val_test_y, y = val_test_X, by = c('Id')),
+  feats_lst = cont_feats_lst,
+  y_cols = y_cols,
+  feats_p_val_lst = feats_p_val_lst,
+  alpha = alpha,
+  target_alpha = target_alpha 
+)
+
+split_pvals_df = t(
+  bind_rows(
+    list(
+      Kag_validate_split_lst$p_vals,
+      maxD_validate_split_lst$p_vals,
+      full_validate_split_lst$p_vals,
+      val_validate_split_lst$p_vals
+    )
+  )
+)
+split_pvals_df = data.frame(split_pvals_df)
+split_pvals_df = rename(
+  split_pvals_df,
+  c(
+    Kag_split_pvals = X1,
+    maxD_split_pvals = X2,
+    full_split_pvals = X3,
+    val_split_pvals = X4
+  )
+)
+split_pvals_df$product =
+  split_pvals_df$Kag_split_pvals *
+  split_pvals_df$full_split_pvals *
+  split_pvals_df$val_split_pvals
+split_pvals_df
+summary(split_pvals_df)
+
+split_pvals_df_melted = melt(split_pvals_df)
+fenced_jbv(
+  data = split_pvals_df_melted,
+  x = 'variable',
+  y = 'value',
+  jit_h = 0
+)
+```
+
+More of the features are more closely aligned across train and test sets with this split than with the `maxDissim` split, according to the Wilcoxon rank sum test.
+
+Because I split twice after the Kaggle split (full split and validation split), the probability that the final validation split represents the original superset is better measured by the product of the p-values of all splits (product column).
+
+Having run this random search algorithm several times with different alpha values, I used each feature's average p-values over all samples (unsuccessful samples included) to determine what was a reasonable minimum alpha to set and avoid overly long run time. Average p-values ranged from .45 to .6, so I set alpha to .5 for all features, meaning there's at least a 50% chance of incorrectly rejecting the null hypothesis that the train and test sets represent the same superset for each feature.
+
+I did, however, set a higher alpha (.9) for the target feature, SalePrice. It's imperative that this feature is representative.
+
+##### By Adversarial Validation
+
+<a id="comp_by_AV"></a>
+
+How do these splits stack up with adversarial validation?
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# # Uncomment to revalidate.
+# full_split_av = adversarial_validation(
+#   train = select(full_train_X, -c('Id')),
+#   test = select(full_test_X, -c('Id'))
+# )
+# saveRDS(full_split_av, 'data/full_split_av.rds')
+
+full_split_av = readRDS('data/full_split_av.rds')
+
+summary(full_split_av$results$Accuracy)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# # Uncomment to revalidate.
+# val_split_av = adversarial_validation(
+#   train = select(val_train_X, -c('Id')),
+#   test = select(val_test_X, -c('Id'))
+# )
+# saveRDS(val_split_av, 'data/val_split_av.rds')
+
+val_split_av = readRDS('data/val_split_av.rds')
+
+summary(val_split_av$results$Accuracy)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+AV_accuracy_df = rename(
+  melt(
+    data.frame(
+      list(
+        'Kaggle' = kag_split_av$results$Accuracy,
+        'maxDissim' = maxD_split_av$results$Accuracy,
+        'test_split' = full_split_av$results$Accuracy,
+        'validation_split' = val_split_av$results$Accuracy
+      )
+    )
+  ),
+  c(Split_Method = variable, Accuracy = value)
+)
+
+###
+### FIXME
+# Not sure why my fenced_jbv is wonky without jit_h = 0.
+# source("tools/eda.R")
+###
+fenced_jbv(
+  data = AV_accuracy_df,
+  x = 'Split_Method',
+  y = 'Accuracy',
+  jit_h = 0
+)
+
+# ggplot(AV_accuracy_df, aes(x = Split_Method, y = Accuracy)) +
+#   geom_jitter(
+#     position = position_jitter(h = 0),
+#     alpha = 0.25,
+#     color = 'blue'
+#     ) +
+#   geom_boxplot(notch = T, varwidth = T, alpha = 0) +
+#   geom_violin(alpha = 0)
+
+# print("While the data are non-normal, Cohen's d is illuminating. Here's Cohen's d between the maxDissim adversarial validation results and those of the split using my method:")
+# print(
+#   cohen.d(
+#     AV_accuracy_df[AV_accuracy_df$Split_Method == 'test_split', 'Accuracy'],
+#     AV_accuracy_df[AV_accuracy_df$Split_Method == 'maxDissim', 'Accuracy']
+#   )
+# )
+```
+
+It looks like my high-compute method produced a significantly less biased split than caret's `maxDissim` did. My final split (the validation split) appears to be significantly more biased than the test split from which it came. But, it is about as biased as the maxDissim split.
+
+None of these are anywhere near as representative as the Kaggle split. That said, Kaggle used a 50-50 split, whereas I used a 70-30 split, which may account somewhat for the difference in accuracy variance and mean. Kaggle's split method remains a black box to me, but I imagine they incorporated multifactor stratification in order to do so well with a classification tree, whereas the two methods I used only considered continuous variables.
+
+# Continued in EDA.Rmd
+
+[See the downstream EDA and feature engineering notebook here.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html){target="_blank"}
+
+## Serialize Dataframes for Storage
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+saveRDS(val_train_X, "data/val_train_X_wrangled.rds")
+saveRDS(val_train_y, "data/val_train_y_wrangled.rds")
+
+head(readRDS("data/val_train_X_wrangled.rds"))
+head(readRDS("data/val_train_y_wrangled.rds"))
+```
+

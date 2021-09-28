@@ -1,0 +1,3719 @@
+---
+title: "EDA and Feature Engineering for Housing Price Regression"
+author: "Kaleb Coberly"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_depth: 5
+    toc_float:
+      collapsed: false
+    number_sections: true
+    code_folding: show
+  html_notebook: default
+  pdf_document: default
+---
+
+<a id="top"></a>
+
+# Continued From EDA_pt1.Rmd
+
+[See the upstream EDA notebook here.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/EDA_pt1.html){target="_blank"}
+
+[See the project overview in the README.](https://github.com/KalebCoberly/Kaggle_Housing_Price_Regression/wrangle_and_split.html){target="_blank"}
+
+# Diving In
+
+[Back to top.](#top)
+
+## Libraries and Source Files
+
+<a id="libraries"></a>
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(tidyverse)
+# library(dict) # Still not found after installation
+library(container) # For Dict class
+library(useful) # For simple.impute
+library(comprehenr) # For list comprehension
+library(GGally)
+library(reshape2)
+library(gridExtra)
+library(gplots)
+library(DescTools) # For df summary
+library(robustHD) # For df summary
+library(caret)
+library(effsize) # For Cohen's d
+
+source('tools/wrangle.R')
+source('tools/eda.R')
+source('tools/engineer.R')
+source('tools/split.R')
+
+# SEED = 65466
+```
+
+## Loading Data
+
+Here's the wrangled training set loaded from objects serialized at the end of wrangle_and_split.Rmd.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = readRDS("data/eda_pt1_val_train_Xy.rds")
+id_col = val_train_Xy$Id
+val_train_Xy = select(val_train_Xy, -c('Id'))
+```
+
+# EDA and Engineering
+
+## Recalc Best Transformers
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+funcs_lst = list(
+    'no_func' = function (x) { x },
+    'sqrt' = sqrt,
+    'cbrt' = function(x) { x^(1/3) },
+    'square' = function(x) { x^2 },
+###
+### FIXME
+# Make log transformations of x+1.
+###
+    'log' = log,
+    'log2' = log2,
+    'log10' = log10,
+    '1/x' = function (x) { 1/x },
+    '2^(1/x)' = function (x) { 2^(1/x) }
+    # Box Cox: write function that calls MASS::boxcox and include lambda in results/function returned.
+    # Yeo-Johnson
+    # Winsorize here?
+    # Rank
+    # Rank-Gauss
+  )
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+# print("Best normalizing transformations:")
+# for (feat in names(best_normalizers)) {
+#   func_name = best_normalizers[[feat]]$best_func$name
+#   print(
+#     paste(
+#       feat, ":", func_name,
+#       ", p-value:", best_normalizers[[feat]]$results[[func_name]]$p.value
+#     )
+#   )
+# }
+```
+
+
+## Heating
+
+[Back to top.](#top)
+
+Mostly gas forced air (GasA, 697). Can probably drop this.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$Heating)
+val_train_Xy = select(val_train_Xy, -c('Heating'))
+```
+
+## HeatingQC
+
+[Back to top.](#top)
+
+Mostly excellent (360), then interestingly more average (211) than good (117). Enough variance to keep, but not normal.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'HeatingQC'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 29)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## CentralAir
+
+[Back to top.](#top)
+
+662 yes, 53 no. Probably drop this one.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$CentralAir)
+val_train_Xy = select(val_train_Xy, -c('CentralAir'))
+```
+
+## Electrical
+
+[Back to top.](#top)
+
+655 standard circuit breaker and Romex. Probably drop, but there are none mixed, so it might be worth making it an ordered factor if keeping.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$Electrical)
+val_train_Xy = select(val_train_Xy, -c('Electrical'))
+```
+
+## X1stFlrSF
+
+[Back to top.](#top)
+
+Dropping as component of GrLivArea.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$X1stFlrSF)
+val_train_Xy = select(val_train_Xy, -c('X1stFlrSF'))
+```
+
+## X2ndFlrSF
+
+[Back to top.](#top)
+
+Dropping as component of GrLivArea. The presence of a second floor is encoded in HouseStyle, but it's also convoluted between a few levels. I'll make a binary out of it and keep that.
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('X2ndFlr.bin' = ifelse(X2ndFlrSF <= 0, 0, 1)) %>%
+  mutate('X2ndFlr.bin.fact' = factor(X2ndFlr.bin, ordered = T))
+
+x = 'X2ndFlr.bin'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+x = 'X2ndFlr.bin.fact'
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+val_train_Xy = select(val_train_Xy, -c('X2ndFlr.bin.fact'))
+```
+
+## LowQualFinSF
+
+[Back to top.](#top)
+
+702 0s. Drop this feature, though it would be a useful modifier of GrLivArea as a detracting component of it.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$LowQualFinSF)
+val_train_Xy = select(val_train_Xy, -c('LowQualFinSF'))
+```
+
+## GrLivArea 
+
+[Back to top.](#top)
+
+### Normalize
+
+As this is polymodal to the number of floors, I'll start by faceting before transforming.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(val_train_Xy, aes(x = GrLivArea)) +
+  geom_histogram(binwidth = 50) +
+  facet_wrap(facets = vars(X2ndFlr.bin), ncol = 1)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GrLivArea'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 50,
+  t_binw = .1
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'log2(GrLivArea)'
+
+val_train_Xy = val_train_Xy %>%
+  mutate('log2(GrLivArea)' = log2(GrLivArea))
+
+ggplot(val_train_Xy, aes(x = .data[[x]])) +
+  geom_histogram(binwidth = .1) +
+  facet_wrap(facets = vars(X2ndFlr.bin), ncol = 1)
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = .1,
+  t_binw = 1
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'square(log2(GrLivArea))'
+
+val_train_Xy = val_train_Xy %>%
+  mutate('square(log2(GrLivArea))' = log2(GrLivArea)^2)
+
+ggplot(val_train_Xy, aes(x = .data[[x]])) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(facets = vars(X2ndFlr.bin), ncol = 1)
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 1,
+  t_binw = 1
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(val_train_Xy, aes(x = `square(log2(GrLivArea))`)) +
+  geom_histogram(binwidth = 1) +
+  facet_wrap(facets = vars(.data$X2ndFlr.bin), ncol = 1)
+
+ggplot(val_train_Xy, aes(x = `square(log2(GrLivArea))`)) +
+  geom_histogram(binwidth = 1) +
+  facet_grid(
+    cols = vars(.data$X2ndFlr.bin),
+    rows = vars(.data$YearBuilt.fact)
+  )
+```
+
+It looks like there might be more polymodality, particularly among mid-century builds, but I'll leave it here. The transformations seem to have better normalized both the full variable and its subsets by storey and age. Winsorization should help both too.
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'square(log2(GrLivArea))'
+
+qqnorm(y = val_train_Xy$GrLivArea, ylab = 'GrLivArea')
+qqline(y = val_train_Xy$GrLivArea, ylab = 'GrLivArea')
+
+qqnorm(y = val_train_Xy$`log2(GrLivArea)`, ylab = 'log2(GrLivArea)')
+qqline(y = val_train_Xy$`log2(GrLivArea)`, ylab = 'log2(GrLivArea)')
+
+qqnorm(y = val_train_Xy[[x]], ylab = x)
+qqline(y = val_train_Xy[[x]], ylab = x)
+
+Win_log2_x_squared = Winsorize(
+  x = val_train_Xy[[x]],
+  probs = c(0.002, 0.998),
+  na.rm = T
+)
+
+qqnorm(y = Win_log2_x_squared, ylab = 'Win_log2_x_squared')
+qqline(y = Win_log2_x_squared, ylab = 'Win_log2_x_squared')
+
+Win_log2_x = Winsorize(
+  x = val_train_Xy$`log2(GrLivArea)`,
+  probs = c(0.002, 0.998),
+  na.rm = T
+)
+
+qqnorm(y = Win_log2_x, ylab = 'Win_log2_x')
+qqline(y = Win_log2_x, ylab = 'Win_log2_x')
+
+Win_raw_x = Winsorize(
+  x = val_train_Xy$GrLivArea,
+  probs = c(0, 0.95),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = val_train_Xy$GrLivArea))
+print(shapiro.test(x = val_train_Xy$`log2(GrLivArea)`))
+print(shapiro.test(x = val_train_Xy[['square(log2(GrLivArea))']]))
+print(shapiro.test(x = Win_log2_x_squared))
+print(shapiro.test(x = Win_log2_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+Winsorizing the log2 better normalized than squaring it, but Winsorizing the squared log2 is close, too. May be overfit to add the square.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(log2(GrLivArea))' = Winsorize(
+      ifelse(GrLivArea <= 0, 0, log2(GrLivArea)),
+      probs = c(0.002, 0.998),
+      na.rm = T
+    )
+  ) %>%
+  mutate(
+    'Win(square(log2(GrLivArea)))' = Winsorize(
+      ifelse(GrLivArea <= 0, 0, log2(GrLivArea)^2),
+      probs = c(0.002, 0.998),
+      na.rm = T
+    )
+  )
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('GrLivArea', 'log2(GrLivArea)', 'square(log2(GrLivArea))', 'Win(log2(GrLivArea))', 'Win(square(log2(GrLivArea)))')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+y_lst = c('log(SalePrice)')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+}
+```
+
+### Hard Code
+
+The Winsorized double transformation may be slightly overfitting and overcomputing, but it's slightly (likely insignificantly) more normal and correlated to SalePrice than the Winsorized single transformation. I'll go with it despite common sense, just for fun.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(square(log2(GrLivArea)))'
+
+min_val = min(Win_log2_x_squared)
+max_val = max(Win_log2_x_squared)
+print(paste("min_val:", min_val))
+print(paste("max_val:", max_val))
+
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(square(log2(GrLivArea)))' = Winsorize(
+      ifelse(GrLivArea <= 0, 0, log2(GrLivArea)^2),
+      # probs = c(0.002, 0.998),
+      # na.rm = T
+      minval = min_val,
+      maxval = max_val
+    )
+  ) %>%
+  select(-c('log2(GrLivArea)', 'Win(log2(GrLivArea))'))
+
+gg = ggplot(val_train_Xy, aes(x = .data[[x]]))
+p1 = gg + geom_histogram(binwidth = 1)
+p2 = gg + geom_boxplot(notch = T)
+grid.arrange(p1, p2)
+```
+
+## BsmtFullBath
+
+[Back to top.](#top)
+
+To contribute to full count.
+
+## BsmtHalfBath
+
+[Back to top.](#top)
+
+To contribute to full count.
+
+## FullBath
+
+[Back to top.](#top)
+
+To contribute to full count.
+
+## HalfBath
+
+[Back to top.](#top)
+
+To contribute to full count.
+
+## TotBaths
+
+[Back to top.](#top)
+
+I could make two features, total baths above grade and total basement baths, but I'll keep it simple.
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(TotBaths = FullBath + BsmtFullBath + 0.5*HalfBath + 0.5*BsmtHalfBath)
+
+x = 'TotBaths'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+```
+
+<a id="totbathBsmtbath"></a>
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+
+ggplot(val_train_Xy, aes(x = factor(TotBaths), y = log(SalePrice))
+) +
+  geom_jitter(alpha = 0.5, aes(color = factor(BsmtFullBath + BsmtHalfBath))) +
+  geom_boxplot(
+    notch = T,
+    notchwidth = .1,
+    varwidth = T,
+    alpha = 0,
+    color = 'blue'
+  ) +
+  geom_violin(alpha = 0) +
+  geom_line(
+    stat = 'summary',
+    fun = quantile,
+    fun.args = list(probs = .9),
+    linetype = 2, aes(group = 1)
+  ) +
+  geom_line(stat = 'summary', fun = mean, mapping = aes(group = 1)) +
+  geom_line(
+    stat = 'summary',
+    fun = quantile,
+    fun.args = list(probs = .1),
+    linetype = 2, aes(group = 1)
+  ) +
+  xlab(label = 'TotBaths') + ylab(label = 'log(SalePrice)')
+```
+
+Basement bathrooms don't seem to add much value when there aren't many bathrooms altogether.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 29)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 0.5,
+  t_binw = 0.1
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'sqrt(TotBaths)'
+val_train_Xy = val_train_Xy %>%
+  mutate('sqrt(TotBaths)' = sqrt(TotBaths))
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = .1,
+  t_binw = .1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'sqrt(TotBaths)'
+
+qqnorm(y = val_train_Xy$TotBaths, ylab = 'TotBaths')
+qqline(y = val_train_Xy$TotBaths, ylab = 'TotBaths')
+
+qqnorm(y = val_train_Xy[[x]], ylab = x)
+qqline(y = val_train_Xy[[x]], ylab = x)
+
+Win_sqrt_x = Winsorize(
+  x = val_train_Xy[[x]],
+  probs = c(0.0, 0.999),
+  na.rm = T
+)
+
+qqnorm(y = Win_sqrt_x, ylab = 'Win_sqrt_x')
+qqline(y = Win_sqrt_x, ylab = 'Win_sqrt_x')
+
+Win_raw_x = Winsorize(
+  x = val_train_Xy$TotBaths,
+  probs = c(0, 0.998),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = val_train_Xy$TotBaths))
+print(shapiro.test(x = val_train_Xy$`sqrt(TotBaths)`))
+print(shapiro.test(x = Win_sqrt_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+Maybe just lightly top-coding the raw variable is best.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(sqrt(TotBaths))' = Winsorize(
+      sqrt(TotBaths),
+      probs = c(0, 0.999),
+      na.rm = T
+    )
+  ) %>%
+  mutate(
+    'Win(TotBaths)' = Winsorize(
+      TotBaths,
+      probs = c(0, 0.998),
+      na.rm = T
+    )
+  )
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(TotBaths)'
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('TotBaths', 'sqrt(TotBaths)', 'Win(sqrt(TotBaths))', 'Win(TotBaths)')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+y_lst = c('log(SalePrice)')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+}
+```
+
+### Hard Code
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(TotBaths)'
+
+min_val = min(Win_raw_x)
+max_val = max(Win_raw_x)
+print(paste("min_val:", min_val))
+print(paste("max_val:", max_val))
+
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(TotBaths)' = Winsorize(
+      FullBath + BsmtFullBath + 0.5*HalfBath + 0.5*BsmtHalfBath,
+      # probs = c(0.002, 0.998),
+      # na.rm = T
+      minval = min_val,
+      maxval = max_val
+    )
+  ) %>%
+  select(-c('sqrt(TotBaths)', 'Win(sqrt(TotBaths))'))
+
+gg = ggplot(val_train_Xy, aes(x = .data[[x]]))
+p1 = gg + geom_histogram(binwidth = 0.5)
+p2 = gg + geom_boxplot(notch = T)
+grid.arrange(p1, p2)
+```
+
+## BedroomAbvGr 
+
+[Back to top.](#top)
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'BedroomAbvGr'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+
+df = select(val_train_Xy, c('log(SalePrice)', 'BedroomAbvGr'))
+df$BedroomAbvGr.fact = factor(df$BedroomAbvGr)
+sum_and_trans_fact(data = df, x = 'BedroomAbvGr.fact', y = y)
+
+p_vals = get_signif_levels(
+  data = df,
+  x = 'BedroomAbvGr.fact',
+  z = y,
+  min_n = 30
+)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('BedroomAbvGr')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 0.5,
+  t_binw = 0.1
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'sqrt(BedroomAbvGr)'
+val_train_Xy = val_train_Xy %>%
+  mutate('sqrt(BedroomAbvGr)' = sqrt(BedroomAbvGr))
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = .1,
+  t_binw = .1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'sqrt(BedroomAbvGr)'
+
+qqnorm(y = val_train_Xy$BedroomAbvGr, ylab = 'BedroomAbvGr')
+qqline(y = val_train_Xy$BedroomAbvGr, ylab = 'BedroomAbvGr')
+
+qqnorm(y = val_train_Xy[[x]], ylab = x)
+qqline(y = val_train_Xy[[x]], ylab = x)
+
+Win_sqrt_x = Winsorize(
+  x = val_train_Xy[[x]],
+  probs = c(0, 0.999),
+  na.rm = T
+)
+
+qqnorm(y = Win_sqrt_x, ylab = 'Win_sqrt_x')
+qqline(y = Win_sqrt_x, ylab = 'Win_sqrt_x')
+
+Win_raw_x = Winsorize(
+  x = val_train_Xy$BedroomAbvGr,
+  probs = c(0, 0.995),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = val_train_Xy$BedroomAbvGr))
+print(shapiro.test(x = val_train_Xy$`sqrt(BedroomAbvGr)`))
+print(shapiro.test(x = Win_sqrt_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+Maybe just lightly Winsorizing the raw variable is best.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(sqrt(BedroomAbvGr))' = Winsorize(
+      sqrt(BedroomAbvGr),
+      probs = c(0, 0.999),
+      na.rm = T
+    )
+  ) %>%
+  mutate(
+    'Win(BedroomAbvGr)' = Winsorize(
+      BedroomAbvGr,
+      probs = c(0, 0.995),
+      na.rm = T
+    )
+  )
+```
+
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(BedroomAbvGr)'
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('BedroomAbvGr', 'sqrt(BedroomAbvGr)', 'Win(sqrt(BedroomAbvGr))', 'Win(BedroomAbvGr)')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+y_lst = c('log(SalePrice)')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+}
+```
+
+### Hard Code
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(BedroomAbvGr)'
+
+min_val = min(Win_raw_x)
+max_val = max(Win_raw_x)
+print(paste("min_val:", min_val))
+print(paste("max_val:", max_val))
+
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(BedroomAbvGr)' = Winsorize(
+      BedroomAbvGr,
+      # probs = c(0.002, 0.998),
+      # na.rm = T
+      minval = min_val,
+      maxval = max_val
+    )
+  ) %>%
+  select(-c('sqrt(BedroomAbvGr)', 'Win(sqrt(BedroomAbvGr))'))
+
+gg = ggplot(val_train_Xy, aes(x = .data[[x]]))
+p1 = gg + geom_histogram(binwidth = 1)
+p2 = gg + geom_boxplot(notch = T)
+grid.arrange(p1, p2)
+```
+
+## KitchenAbvGr
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$KitchenAbvGr)
+val_train_Xy = select(val_train_Xy, -c('KitchenAbvGr'))
+```
+
+## KitchenQual
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'KitchenQual'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 29)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## TotRmsAbvGrd
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'TotRmsAbvGrd'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+
+df = select(val_train_Xy, c('log(SalePrice)', 'TotRmsAbvGrd'))
+df$TotRmsAbvGrd.fact = factor(df$TotRmsAbvGrd)
+sum_and_trans_fact(data = df, x = 'TotRmsAbvGrd.fact', y = y)
+
+p_vals = get_signif_levels(
+  data = df,
+  x = 'TotRmsAbvGrd.fact',
+  z = y,
+  min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 1,
+  t_binw = 1
+)
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('TotRmsAbvGrd')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'TotRmsAbvGrd'
+
+qqnorm(y = val_train_Xy[[x]], ylab = x)
+qqline(y = val_train_Xy[[x]], ylab = x)
+
+Win_raw_x = Winsorize(
+  x = val_train_Xy$TotRmsAbvGrd,
+  probs = c(0, 0.975),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win(TotRmsAbvGrd)')
+qqline(y = Win_raw_x, ylab = 'Win(TotRmsAbvGrd)')
+
+print(shapiro.test(x = val_train_Xy$TotRmsAbvGrd))
+print(shapiro.test(x = Win_raw_x))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(TotRmsAbvGrd)' = Winsorize(
+      TotRmsAbvGrd,
+      probs = c(0, 0.975),
+      na.rm = T
+    )
+  )
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(TotRmsAbvGrd)'
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('TotRmsAbvGrd', 'Win(TotRmsAbvGrd)')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+y_lst = c('log(SalePrice)')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+}
+```
+
+### Hard Code
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(TotRmsAbvGrd)'
+
+min_val = min(Win_raw_x)
+max_val = max(Win_raw_x)
+print(paste("min_val:", min_val))
+print(paste("max_val:", max_val))
+
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(TotRmsAbvGrd)' = Winsorize(
+      TotRmsAbvGrd,
+      # probs = c(0, 0.975),
+      # na.rm = T
+      minval = min_val,
+      maxval = max_val
+    )
+  )
+
+gg = ggplot(val_train_Xy, aes(x = .data[[x]]))
+p1 = gg + geom_histogram(binwidth = 1)
+p2 = gg + geom_boxplot(notch = T)
+grid.arrange(p1, p2)
+```
+
+## Functional
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+x = 'Functional'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 29)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## Fireplaces 
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Fireplaces'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+
+val_train_Xy$Fireplaces.fact = factor(val_train_Xy$Fireplaces, ordered = T)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = 'Fireplaces.fact', y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = 'Fireplaces.fact', z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('Fireplaces')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+plot_scat_pairs(df = val_train_Xy, x = x, y_lst = c(y))
+```
+
+The variable needs more than three unique values in order to use my function to check for transformations, and 0 can't be one of them in order to include log transformations. So, I'll use Fireplaces + 1 to search for transformations.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy$Fireplaces_plus1 = val_train_Xy$Fireplaces + 1
+x = 'Fireplaces_plus1'
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 1,
+  t_binw = 1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Fireplaces'
+
+qqnorm(y = val_train_Xy[[x]], ylab = x)
+qqline(y = val_train_Xy[[x]], ylab = x)
+
+Win_raw_x = Winsorize(
+  x = val_train_Xy$Fireplaces,
+  probs = c(0, 0.999),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = val_train_Xy$Fireplaces))
+print(shapiro.test(x = Win_raw_x))
+```
+
+Winsorization doesn't help. 
+
+### Binarize
+
+There's no apparent meaningful difference in price between houses with 1 fireplace and those with 2 or 3. It's significant (p < 0.1), but not apparently meaningful given the overlapping notches in the boxplot above, though I did not take Cohen's d for effect size.
+
+Binarization may condense the feature space without a lot of information loss. In fact, it improves the correlation to the target variable.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(Fireplaces.bin = ifelse(Fireplaces == 0, 0, 1))
+
+x = 'Fireplaces.bin'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+
+val_train_Xy$Fireplaces.bin.fact = factor(val_train_Xy$Fireplaces.bin, ordered = T)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = 'Fireplaces.bin.fact', y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = 'Fireplaces.bin.fact', z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('Fireplaces', 'Fireplaces.bin')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy,
+  -c('Fireplaces.fact', 'Fireplaces_plus1', 'Fireplaces.bin.fact',
+     'Fireplaces')
+)
+```
+
+## FireplaceQu
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'FireplaceQu'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 29)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+One-hot encoding this FireplaceQu will include a binarized version ("None":int[0,1]), so we can drop Fireplace.bin altogether, and Fireplace because it just adds noise. I'll take care of that during modeling with caret.
+
+## GarageType
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageType'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## GarageYrBlt 
+
+[Back to top.](#top)
+
+Similar distribution as year built for house. May not add additional information, but may be useful in interaction with type and finish. Could drop and use YearBuilt as proxy but would lose some info.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageYrBlt'
+summary(val_train_Xy[x])
+# sum_and_trans_cont(
+#   data = val_train_Xy,
+#   x = x,
+#   func = best_normalizers[[x]]$best_func$func,
+#   func_name = best_normalizers[[x]]$best_func$name,
+#   x_binw = 1,
+#   t_binw = 1
+# )
+
+gg = ggplot(val_train_Xy, aes(x = GarageYrBlt))
+p1 = gg + geom_histogram(binwidth = 1)
+p2 = gg + geom_boxplot(notch = T)
+grid.arrange(p1, p2)
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageYrBlt'
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c(x)
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+y_lst = c('log(SalePrice)')
+plot_scat_pairs(df = val_train_Xy, x = x, y_lst = y_lst)
+```
+
+<a id="garbltControl"></a>
+
+### "Controlling"
+
+Even "controlling" for the year the house was built, GarageYrBlt doesn't predict sale prices well, as seen in the next few plots. I'll just drop it.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'GarBltLater' = factor(ifelse((GarageYrBlt - YearBuilt) <= 0, 0, 1))
+  )
+
+ggplot(val_train_Xy, aes(x = GarageYrBlt, y = YearBuilt)) +
+  geom_jitter(
+    alpha = 0.5,
+    aes(
+      color = SalePrice.fact
+    ),
+    position = position_jitter(w = 1, h = 1)
+  )
+
+fbv = fenced_jbv(
+  data = val_train_Xy,
+  x = 'GarBltLater',
+  y = 'log(SalePrice)'
+)
+fbv
+
+fbv +
+  facet_wrap(facets = vars(YearBuilt.fact))
+
+val_train_Xy$resids = lm(
+  `log(SalePrice)` ~ `sqrt(Age)`,
+  val_train_Xy
+)$residuals
+
+df = filter(
+  val_train_Xy,
+  GarageYrBlt - YearBuilt != 0
+)
+
+ggplot(df, aes(x = GarageYrBlt, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ylab(label = 'log(SalePrice) ~ YearBuilt Residuals')
+
+print(
+  paste(
+    "Correlation of GarageYRBlt to Age residual:",
+    cor(df$GarageYrBlt, df$resids)
+  )
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(val_train_Xy, -c('GarageYrBlt', 'GarBltLater'))
+```
+
+## GarageFinish
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageFinish'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## GarageCars 
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageCars'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+
+y = 'log(SalePrice)'
+val_train_Xy$GarageCars.fact = factor(
+  val_train_Xy$GarageCars,
+  ordered = T
+)
+sum_and_trans_fact(data = val_train_Xy, x = 'GarageCars.fact', y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = 'GarageCars.fact', z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c(x)
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+plot_scat_pairs(df = val_train_Xy, x = x, y_lst = c(y))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy$GarageCars.plus1 = val_train_Xy$GarageCars + 1
+x = 'GarageCars.plus1'
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 1,
+  t_binw = 1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageCars'
+
+qqnorm(y = val_train_Xy[[x]], ylab = x)
+qqline(y = val_train_Xy[[x]], ylab = x)
+
+val_train_Xy$`Win(GarageCars)` = Winsorize(
+  x = val_train_Xy[[x]],
+  probs = c(0, 0.999),
+  na.rm = T
+)
+
+qqnorm(y = val_train_Xy$`Win(GarageCars)`, ylab = 'Win_raw_x')
+qqline(y = val_train_Xy$`Win(GarageCars)`, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = val_train_Xy[[x]]))
+print(shapiro.test(x = val_train_Xy$`Win(GarageCars)`))
+```
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(GarageCars.bin = ifelse(GarageCars == 0, 0, 1))
+
+x = 'GarageCars.bin'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+
+val_train_Xy$GarageCars.bin.fact =
+  factor(val_train_Xy$GarageCars.bin, ordered = T)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = 'GarageCars.bin.fact', y = y)
+
+p_vals = get_signif_levels(
+  data = val_train_Xy, x = 'GarageCars.bin.fact', z = y, min_n = 30
+)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('GarageCars', 'Win(GarageCars)', 'GarageCars.bin')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+```
+
+That didn't seem to help.
+
+## GarageArea 
+
+[Back to top.](#top)
+
+### Normalize
+
+Polymodal in interaction with GarageCars.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'GarageArea'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 50,
+  t_binw = 1
+)
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'sqrt(GarageArea)'
+val_train_Xy = val_train_Xy %>%
+  mutate('sqrt(GarageArea)' = sqrt(GarageArea))
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy,
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 1,
+  t_binw = 1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'sqrt(GarageArea)'
+df = filter(val_train_Xy, GarageArea != 0)
+
+qqnorm(y = df$GarageArea, ylab = 'GarageArea')
+qqline(y = df$GarageArea, ylab = 'GarageArea')
+
+qqnorm(y = df[[x]], ylab = x)
+qqline(y = df[[x]], ylab = x)
+
+Win_sqrt_x = Winsorize(
+  x = df[[x]],
+  probs = c(0, 0.998),
+  na.rm = T
+)
+
+qqnorm(y = Win_sqrt_x, ylab = 'Win_sqrt_x')
+qqline(y = Win_sqrt_x, ylab = 'Win_sqrt_x')
+
+Win_raw_x = Winsorize(
+  x = df$GarageArea,
+  probs = c(0, 0.987),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = val_train_Xy$GarageArea))
+print(shapiro.test(x = val_train_Xy$`sqrt(GarageArea)`))
+print(shapiro.test(x = Win_sqrt_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+min_val = min(Win_sqrt_x)
+max_val = max(Win_sqrt_x)
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(sqrt(GarageArea))' = ifelse(
+      GarageArea == 0,
+      0,
+      Winsorize(
+        sqrt(GarageArea),
+        minval = min_val,
+        maxval = max_val
+      )
+    )
+  )
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(sqrt(GarageArea))'
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('GarageArea', 'sqrt(GarageArea)', x)
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    .data[[x]] != 0
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs (no 0s):")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features (no 0s)')
+
+y_lst = c('log(SalePrice)')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+}
+```
+
+Transforming and Winsorizing doesn't help the overall correlation to SalePrice. Let's facet it out and see.
+
+### Garage Area and Cars by Type
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = filter(
+  val_train_Xy,
+  (GarageType %in% c('Attchd', 'Detchd', 'BuiltIn')) &
+    (GarageCars != 4) # Ony one point in this subset with 4 and it doesn't really change the correlations, but it saves viz space.
+)
+
+ggplot(df, aes(x = `Win(sqrt(GarageArea))`, y = `log(SalePrice)`)) +
+  geom_jitter(alpha = 0.5) +
+  geom_smooth(method = 'lm') +
+  facet_grid(rows = vars(GarageType), cols = vars(GarageCars.fact))
+
+sum_df0 = df %>%
+  summarize(
+    n = n(),
+    GarageArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`GarageArea`
+    ),
+    sqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`sqrt(GarageArea)`
+    ),
+    WinsqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(sqrt(GarageArea))`
+    )
+  )
+
+min_n = 30
+
+# sum_df1 = df %>%
+#   group_by(GarageCars.fact, GarageType) %>%
+#   summarize(
+#     n = n(),
+#     GarageArea_cor = cor(
+#       x = .data$`Win(log(SalePrice))`,
+#       y = .data$`GarageArea`
+#     ),
+#     sqrtArea_cor = cor(
+#       x = .data$`Win(log(SalePrice))`,
+#       y = .data$`sqrt(GarageArea)`
+#     ),
+#     WinsqrtArea_cor = cor(
+#       x = .data$`Win(log(SalePrice))`,
+#       y = .data$`Win(sqrt(GarageArea))`
+#     )
+#   ) %>%
+#   filter(n >= min_n)
+
+sum_df2 = df %>% group_by(GarageType) %>%
+  summarize(
+    n = n(),
+    GarageArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`GarageArea`
+    ),
+    sqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`sqrt(GarageArea)`
+    ),
+    WinsqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(sqrt(GarageArea))`
+    )
+  ) %>%
+  filter(n >= min_n)
+
+sum_df3 = df %>% group_by(GarageCars.fact) %>%
+  summarize(
+    n = n(),
+    GarageArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`GarageArea`
+    ),
+    sqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`sqrt(GarageArea)`
+    ),
+    WinsqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(sqrt(GarageArea))`
+    )
+  ) %>%
+  filter(n >= min_n)
+
+sum_df0 %>%
+  merge(y = sum_df2, all = T) %>%
+  merge(y = sum_df3, all = T) %>%
+  # merge(y = sum_df1, all = T) %>%
+  select(
+    c('GarageType', 'GarageCars.fact', 'n', 'GarageArea_cor',
+      'sqrtArea_cor', 'WinsqrtArea_cor')
+  ) %>%
+  arrange(GarageType, GarageCars.fact)
+```
+
+Transforming and Winsorizing GarageArea improves correlation to the target variable ("Win(log(SalePrice))") somewhat when excluding houses without garages. Grouping by garage type helps in some cases.
+
+Whether to transform the variable or not may depend on which ML algorithm we're using and how. A decision tree will likely be indifferent to tranformations, though it may benefit from noise reduction with Winsorization. A linear regression will only benefit if type and/or missingness is factored in, as would KNN.
+
+Grouping by number of cars lowers the area:price correlation to no correlation. And, in fact, number of cars has a stronger correlation to the target variable than area does. Let's see how grouping by type further improves that correlation.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = filter(
+  val_train_Xy,
+  (GarageType %in% c('Attchd', 'Detchd', 'BuiltIn'))
+)
+
+ggplot(df, aes(x = GarageCars, y = `log(SalePrice)`)) +
+  geom_jitter(alpha = 0.5) +
+  geom_smooth(method = 'lm') +
+  facet_wrap(facets = vars(GarageType))
+
+sum_df0 = df %>%
+  summarize(
+    n = n(),
+    Cars_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$GarageCars
+    ),
+    WinCars_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(GarageCars)`
+    ),
+    WinsqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(sqrt(GarageArea))`
+    )
+  )
+
+sum_df2 = df %>% group_by(GarageType) %>%
+  summarize(
+    n = n(),
+    Cars_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$GarageCars
+    ),
+    WinCars_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(GarageCars)`
+    ),
+    WinsqrtArea_cor = cor(
+      x = .data$`Win(log(SalePrice))`,
+      y = .data$`Win(sqrt(GarageArea))`
+    )
+  )
+
+sum_df0 %>%
+  merge(y = sum_df2, all = T) %>%
+  select(
+    c('GarageType', 'n', 'Cars_cor', 'WinCars_cor', 'WinsqrtArea_cor')
+  ) %>%
+  arrange(GarageType)
+```
+
+It looks worth dropping GarageArea in favor of GarageCars. There is an argument against linear regression using discrete variables, but it seems to work nonetheless.
+
+Winsorizing GarageCars only produces a marginal benefit which may prove spurious as it only adjusts one point. Plus, it reduces normality. So, I'll just use the raw feature.
+
+There are likely other features at play, like year built, that also affect things like the difference in the prices of two-car attached garages and two-car detached garages.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+fenced_jbv(
+  data = df[df$GarageCars != 4, ],
+  x = 'GarageType',
+  y = 'log(SalePrice)',
+  jit_col = 'YearBuilt.fact',
+  leg_lbl = 'Year Built'
+) +
+  facet_wrap(facets = vars(GarageCars.fact))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy,
+  -c('GarageCars.fact', 'GarageCars.plus1', 'GarageCars.bin',
+     'GarageCars.bin.fact', 'GarageArea', 'sqrt(GarageArea)',
+     'Win(sqrt(GarageArea))')
+)
+```
+
+## GarageQual, Cond
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy[ , c('GarageQual', 'GarageCond')])
+val_train_Xy = select(val_train_Xy, -c('GarageQual', 'GarageCond'))
+```
+
+## PavedDrive
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$PavedDrive)
+val_train_Xy = select(val_train_Xy, -c('PavedDrive'))
+```
+
+## WoodDeckSF
+
+[Back to top.](#top)
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'WoodDeckSF'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$WoodDeckSF != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 10,
+  t_binw = .1
+)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'cbrt(WoodDeckSF)'
+val_train_Xy = val_train_Xy %>%
+  mutate('cbrt(WoodDeckSF)' = (WoodDeckSF)^(1/3))
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy[[x]] != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = .1,
+  t_binw = .1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = filter(val_train_Xy, WoodDeckSF != 0)
+
+qqnorm(y = df$WoodDeckSF, ylab = 'WoodDeckSF')
+qqline(y = df$WoodDeckSF, ylab = 'WoodDeckSF')
+
+qqnorm(y = df[[x]], ylab = x)
+qqline(y = df[[x]], ylab = x)
+
+Win_cbrt_x = Winsorize(
+  x = df[[x]],
+  probs = c(0.01, 0.99),
+  na.rm = T
+)
+
+qqnorm(y = Win_cbrt_x, ylab = x)
+qqline(y = Win_cbrt_x, ylab = x)
+
+Win_raw_x = Winsorize(
+  x = df$WoodDeckSF,
+  probs = c(0, 0.95),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'WoodDeckSF')
+qqline(y = Win_raw_x, ylab = 'WoodDeckSF')
+
+print(shapiro.test(x = df$WoodDeckSF))
+print(shapiro.test(x = df[[x]]))
+print(shapiro.test(x = Win_cbrt_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(cbrt(WoodDeckSF))' = ifelse(
+      WoodDeckSF == 0,
+      0,
+      Winsorize(
+        WoodDeckSF^(1/3),
+        minval = min(Win_cbrt_x),
+        maxval = max(Win_cbrt_x)
+      )
+    )
+  ) %>%
+  mutate(
+    'Win(WoodDeckSF)' = ifelse(
+      WoodDeckSF == 0,
+      0,
+      Winsorize(
+        WoodDeckSF,
+        minval = min(Win_raw_x),
+        maxval = max(Win_raw_x)
+      )
+    )
+  )
+```
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('WoodDeck.bin' = ifelse(WoodDeckSF == 0, 0, 1)) %>%
+  mutate('WoodDeck.bin.fact' = factor(WoodDeck.bin, ordered = T))
+
+x = 'WoodDeck.bin.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('WoodDeckSF', 'cbrt(WoodDeckSF)', 'Win(cbrt(WoodDeckSF))',
+          'Win(WoodDeckSF)', 'WoodDeck.bin')
+x = 'Win(cbrt(WoodDeckSF))'
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    .data[[x]] != 0
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs (no 0s):")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features (no 0s)')
+
+y_lst = c('Win(log(SalePrice))')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+  # plot_scat_pairs(
+  #   df = filter(val_train_Xy, WoodDeckSF != 0),
+  #   x = feat,
+  #   y_lst = y_lst
+  # )
+}
+```
+
+There's no real correlation between deck square footage and the target price when you remove houses without decks; the binary version does most of the work. But, the transformation does it a little better and does offer more normalized distance between points for KNN.
+
+### Hard Code
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Win(cbrt(WoodDeckSF))'
+
+min_val = min(Win_cbrt_x)
+max_val = max(Win_cbrt_x)
+print(paste("min_val:", min_val))
+print(paste("max_val:", max_val))
+
+# Already hard coded above
+
+val_train_Xy = select(
+  val_train_Xy,
+  -c('WoodDeck.bin', 'WoodDeck.bin.fact', 'Win(WoodDeckSF)')
+)
+
+ggplot(val_train_Xy, aes(x = .data[[x]])) +
+  geom_histogram(binwidth = .25)
+```
+
+## OpenPorchSF 
+
+[Back to top.](#top)
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'OpenPorchSF'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$OpenPorchSF != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 10,
+  t_binw = 0.1
+)
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'cbrt(OpenPorchSF)'
+val_train_Xy = val_train_Xy %>%
+  mutate('cbrt(OpenPorchSF)' = OpenPorchSF^(1/3))
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy[[x]] != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 0.1,
+  t_binw = 0.1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = filter(val_train_Xy, OpenPorchSF != 0)
+x = 'cbrt(OpenPorchSF)'
+
+qqnorm(y = df$OpenPorchSF, ylab = 'OpenPorchSF')
+qqline(y = df$OpenPorchSF, ylab = 'OpenPorchSF')
+
+qqnorm(y = df[[x]], ylab = x)
+qqline(y = df[[x]], ylab = x)
+
+Win_cbrt_x = Winsorize(
+  x = df[[x]],
+  probs = c(0.001, 0.994),
+  na.rm = T
+)
+
+qqnorm(y = Win_cbrt_x, ylab = x)
+qqline(y = Win_cbrt_x, ylab = x)
+
+Win_raw_x = Winsorize(
+  x = df$OpenPorchSF,
+  probs = c(0, 0.95),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'OpenPorchSF')
+qqline(y = Win_raw_x, ylab = 'OpenPorchSF')
+
+print(shapiro.test(x = df$OpenPorchSF))
+print(shapiro.test(x = df[[x]]))
+print(shapiro.test(x = Win_cbrt_x))
+print(shapiro.test(x = Win_raw_x))
+```
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(cbrt(OpenPorchSF))' = ifelse(
+      OpenPorchSF == 0,
+      0,
+      Winsorize(
+        OpenPorchSF^(1/3),
+        # probs = c(0.001, 0.994),
+        # na.rm = T
+        minval = min(Win_cbrt_x),
+        maxval = max(Win_cbrt_x)
+      )
+    )
+  )
+```
+
+Looks like some polymodality happening. Year built doesn't seem to explain it. I'm not going to manually search for it any further, but a decision tree or other ML algorithm may find and "factor" in the hidden interaction.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(
+  filter(val_train_Xy, OpenPorchSF != 0),
+  aes(x = `cbrt(OpenPorchSF)`)
+) +
+  geom_histogram(binwidth = 0.1) +
+  facet_wrap(facets = vars(YearBuilt.fact), ncol = 1)
+
+ggplot(
+  filter(val_train_Xy, OpenPorchSF != 0),
+  aes(x = `cbrt(OpenPorchSF)`, y = `log(SalePrice)`)
+) +
+  geom_point(aes(color = YearBuilt))
+```
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('OpenPorch.bin' = ifelse(OpenPorchSF == 0, 0, 1)) %>%
+  mutate('OpenPorch.bin.fact' = factor(OpenPorch.bin, ordered = T))
+
+x = 'OpenPorch.bin.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('OpenPorchSF', 'cbrt(OpenPorchSF)', 'Win(cbrt(OpenPorchSF))',
+          'OpenPorch.bin')
+x = 'Win(cbrt(OpenPorchSF))'
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    .data[[x]] != 0
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs (no 0s):")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features (no 0s)')
+
+y_lst = c('Win(log(SalePrice))')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+  plot_scat_pairs(
+    df = val_train_Xy[val_train_Xy[[x]] != 0, ],
+    x = feat,
+    y_lst = y_lst
+  )
+}
+```
+
+In this case, the binary variable is doing all the work.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy,
+  -c('cbrt(OpenPorchSF)', 'Win(cbrt(OpenPorchSF))', 'OpenPorch.bin.fact')
+)
+```
+
+## EnclosedPorch 
+
+[Back to top.](#top)
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'EnclosedPorch'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$EnclosedPorch != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 5,
+  t_binw = 5
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = filter(val_train_Xy, EnclosedPorch != 0)
+
+qqnorm(y = df[[x]], ylab = x)
+qqline(y = df[[x]], ylab = x)
+
+Win_raw_x = Winsorize(
+  x = df$EnclosedPorch,
+  probs = c(0.001, 0.999),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x, ylab = 'Win_raw_x')
+
+print(shapiro.test(x = df[[x]]))
+print(shapiro.test(x = Win_raw_x))
+```
+
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('EnclosedPorch.bin' = ifelse(EnclosedPorch == 0, 0, 1)) %>%
+  mutate(
+    'EnclosedPorch.bin.fact' = factor(
+      EnclosedPorch.bin,
+      ordered = T
+    )
+  )
+
+x = 'EnclosedPorch.bin.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('EnclosedPorch', 'EnclosedPorch.bin')
+x = 'EnclosedPorch'
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    .data[[x]] != 0
+  ),
+  x_lst = c(x),
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs (no 0s):")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features (no 0s)')
+
+y_lst = c('log(SalePrice)')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+  plot_scat_pairs(
+    df = val_train_Xy[val_train_Xy[[x]] != 0, ],
+    x = feat,
+    y_lst = y_lst
+  )
+}
+```
+
+Houses with enclosed porches are significantly cheaper than those without, maybe due to a confounding variable like year built. There is a weak, if existent, positive correlation between square footage and price within those that have them.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+fenced_jbv(
+  data = val_train_Xy,
+  x = 'EnclosedPorch.bin.fact',
+  y = 'log(SalePrice)',
+  jit_col = 'YearBuilt',
+  jit_alpha = 1
+) +
+  facet_wrap(facets = vars(YearBuilt.fact))
+
+val_train_Xy$resids = lm(
+  `log(SalePrice)` ~ `sqrt(Age)`,
+  val_train_Xy
+)$residuals
+
+ggplot(val_train_Xy, aes(x = EnclosedPorch, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy, -c('EnclosedPorch.bin', 'EnclosedPorch.bin.fact')
+)
+```
+
+## X3SsnPorch
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$X3SsnPorch)
+val_train_Xy = select(val_train_Xy, -c('X3SsnPorch'))
+```
+
+## ScreenPorch
+
+[Back to top.](#top)
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'ScreenPorch'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$ScreenPorch != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 10,
+  t_binw = 0.1
+)
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'cbrt(ScreenPorch)'
+val_train_Xy = val_train_Xy %>%
+  mutate('cbrt(ScreenPorch)' = ScreenPorch^(1/3))
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$`cbrt(ScreenPorch)` != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 0.1,
+  t_binw = 0.1
+)
+```
+
+### Winsorize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'cbrt(ScreenPorch)'
+df = filter(val_train_Xy, ScreenPorch != 0) 
+
+qqnorm(y = df$ScreenPorch, ylab = 'ScreenPorch')
+qqline(y = df$ScreenPorch)
+
+qqnorm(y = df[[x]], ylab = x)
+qqline(y = df[[x]])
+
+Win_cbrt_x = Winsorize(
+  df[[x]],
+  probs = c(0.05, 0.95),
+  na.rm = T
+)
+
+qqnorm(y = Win_cbrt_x, ylab = 'Win_cbrt_x')
+qqline(y = Win_cbrt_x)
+
+Win_raw_x = Winsorize(
+  df$ScreenPorch,
+  probs = c(0.05, 0.95),
+  na.rm = T
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x)
+
+print(shapiro.test(x = df$ScreenPorch))
+print(shapiro.test(x = df[[x]]))
+print(shapiro.test(x = Win_cbrt_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(cbrt(ScreenPorch))' = ifelse(
+      ScreenPorch == 0,
+      0,
+      Winsorize(
+        ScreenPorch^(1/3),
+        minval = min(Win_cbrt_x),
+        maxval = max(Win_cbrt_x)
+      )
+    )
+  )
+```
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('ScreenPorch.bin' = ifelse(ScreenPorch ==0, 0, 1)) %>%
+  mutate('ScreenPorch.bin.fact' = factor(ScreenPorch.bin, ordered = T))
+
+x = 'ScreenPorch.bin.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('ScreenPorch', 'cbrt(ScreenPorch)', 'Win(cbrt(ScreenPorch))',
+          'ScreenPorch.bin')
+x = 'Win(cbrt(ScreenPorch))'
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    .data[[x]] != 0
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs (no 0s):")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features (no 0s)')
+
+y_lst = c('Win(log(SalePrice))')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+  plot_scat_pairs(
+    df = val_train_Xy[val_train_Xy[[x]] != 0, ],
+    x = feat,
+    y_lst = y_lst
+  )
+}
+```
+
+The binary doesn't seem to make a significant difference as other binaries like WoodDeck and OpenPorch. So, it's not worth using alone, but might be useful in interaction with the area in a linear regression. Decision trees should be able to do without the binary feature. The transformation may help KNN, but like a decision tree, I would want to avoid overweighting by including both.
+
+### "Controlling"
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+fenced_jbv(
+  data = val_train_Xy,
+  x = 'ScreenPorch.bin.fact',
+  y = 'log(SalePrice)',
+  jit_col = 'YearBuilt',
+  jit_alpha = 1
+) +
+  facet_wrap(facets = vars(YearBuilt.fact))
+
+val_train_Xy$resids = lm(
+  `log(SalePrice)` ~ `sqrt(Age)`,
+  val_train_Xy
+)$residuals
+
+ggplot(val_train_Xy, aes(x = `cbrt(ScreenPorch)`, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+
+print("Correlation of cbrt(ScreenPorch) to residuals of `log(SalePrice)` ~ `sqrt(Age)`")
+print(cor(x = val_train_Xy$`cbrt(ScreenPorch)`, y = val_train_Xy$resids))
+
+df = filter(val_train_Xy, ScreenPorch != 0)
+
+ggplot(df, aes(x = `cbrt(ScreenPorch)`, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+
+print("Exluding ScreenPorch 0s:")
+print(cor(x = val_train_Xy$`cbrt(ScreenPorch)`, y = val_train_Xy$resids))
+```
+
+This feature doesn't seem to have much to offer. But, I'll leave it anyway and let feature selection during modeling suss that out.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy, -c('ScreenPorch.bin.fact', 'Win(cbrt(ScreenPorch))')
+)
+```
+
+## PoolArea, QC
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+summary(val_train_Xy$PoolQC)
+val_train_Xy = select(val_train_Xy, -c('PoolArea', 'PoolQC'))
+```
+
+## Fence
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'Fence'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('Fence.bin' = ifelse(Fence == 'None', 0, 1)) %>%
+  mutate('Fence.bin.fact' = factor(Fence.bin, ordered = T))
+
+x = 'Fence.bin.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+Having a Fence seems to detract value, probably due to an interaction with another variable as we saw with EnclosedPorch and age. Unlike EnclosedPorch, it's not immediately obvious what the other variable is, and "controlling" for it with a linear regression may actually increase Fence's significance. So, rather than hunting for the other variable(s) or dropping this one, I'll leave it and see if ML modeling can make use of it.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy,
+  -c('Fence.bin', 'Fence.bin.fact')
+)
+```
+
+## MiscFeature, MiscVal
+
+[Back to top.](#top)
+
+MiscVal is kind of a cheater variable. It should have precisely 1 for its coefficient. Otherwise, I would just drop it for so few observations; it might just throw of the regression. If I keep it, it should be transformed in the same way that the target variable is.
+
+It also looks like the presence of a miscellaneous improvement is associated with a lower price if anything.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'MiscFeature'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## MiscVal 
+
+[Back to top.](#top)
+
+### Normalize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'MiscVal'
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$MiscVal != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = 200,
+  t_binw = .1
+)
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'log2(MiscVal)'
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'log2(MiscVal)' = ifelse(
+      MiscVal == 0,
+      0,
+      log2(MiscVal)
+    )
+  )
+
+# Recalculate best normalizers.
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+best_normalizers = find_best_normalizer_per_feat(
+  df = val_train_Xy,
+  feats_lst = num_feats,
+  funcs_lst = funcs_lst,
+  exclude_vals = list(0)
+)
+
+summary(val_train_Xy[x])
+sum_and_trans_cont(
+  data = val_train_Xy[val_train_Xy$`log2(MiscVal)` != 0, ],
+  x = x,
+  func = best_normalizers[[x]]$best_func$func,
+  func_name = best_normalizers[[x]]$best_func$name,
+  x_binw = .1,
+  t_binw = .1
+)
+```
+
+Alright, I'll give it a natural log like SalePrice, since it is a straight dollar value.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'log(MiscVal)'
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'log(MiscVal)' = ifelse(
+      MiscVal == 0,
+      0,
+      log(MiscVal)
+    )
+  )
+
+df = filter(val_train_Xy, MiscVal != 0)
+
+gg = ggplot(df, aes(x = `log(MiscVal)`))
+p1 = gg + geom_histogram(binwidth = 0.1)
+p2 = gg + geom_boxplot(notch = T)
+grid.arrange(p1, p2)
+```
+
+### Winsorize
+
+Since this variable is an actual dollar value, Winsorizing it doesn't really make sense. I'll check it out anyway.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+qqnorm(y = df$MiscVal, ylab = 'MiscVal')
+qqline(y = df$MiscVal)
+
+qqnorm(y = df$`log(MiscVal)`, ylab = 'log(MiscVal)')
+qqline(y = df$`log(MiscVal)`)
+
+Win_log_x = Winsorize(
+  df$`log(MiscVal)`,
+  probs = c(0.007, 0.95),
+  na.rm = T
+)
+
+qqnorm(y = Win_log_x, ylab = 'Win_log_x')
+qqline(y = Win_log_x)
+
+Win_raw_x = Winsorize(
+  df$MiscVal,
+  probs = c(0, 0.95)
+)
+
+qqnorm(y = Win_raw_x, ylab = 'Win_raw_x')
+qqline(y = Win_raw_x)
+
+print(shapiro.test(x = df$MiscVal))
+print(shapiro.test(x = df$`log(MiscVal)`))
+print(shapiro.test(x = Win_log_x))
+print(shapiro.test(x = Win_raw_x))
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    'Win(log(MiscVal))' = ifelse(
+      MiscVal == 0,
+      0,
+      Winsorize(
+        log(MiscVal),
+        minval = min(Win_log_x),
+        maxval = max(Win_log_x)
+      )
+    )
+  )
+```
+
+### Binarize
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('MiscVal.bin' = ifelse(MiscVal == 0, 0, 1)) %>%
+  mutate('MiscVal.bin.fact' = factor(MiscVal.bin, ordered = T))
+
+x = 'MiscVal.bin.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+### Correlations
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('MiscVal', 'log2(MiscVal)', 'log(MiscVal)',
+          'Win(log(MiscVal))', 'MiscVal.bin')
+
+x = 'log(MiscVal)'
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    !is.na(.data[[x]])
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs:")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features')
+
+df = get_cors(
+  data = filter(
+    select(val_train_Xy, all_of(num_feats)),
+    .data[[x]] != 0
+  ),
+  x_lst = x_lst,
+  feats = num_feats
+)
+df
+print("Summary of absolute values of Pearson's Rs (no 0s):")
+df = abs(df)
+summary(abs(df))
+
+df = melt(df)
+ggplot(df, aes(x = variable, y = value)) +
+  geom_boxplot(notch = T) +
+  ylab(label = 'Absolute Value of Correlation to Other Features (no 0s)')
+
+y_lst = c('Win(log(SalePrice))')
+for (feat in x_lst) {
+  plot_scat_pairs(df = val_train_Xy, x = feat, y_lst = y_lst)
+  plot_scat_pairs(
+    df = val_train_Xy[val_train_Xy[[x]] != 0, ],
+    x = feat,
+    y_lst = y_lst
+  )
+}
+```
+
+### "Controlling"
+
+MiscVal appears to be correlated with the size of the lot and house. Perhaps that will do the heavy lifting and make MiscVal obsolete.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy$resids = lm(
+  `log(SalePrice)` ~ `Win(LotArea)`,
+  val_train_Xy
+)$residuals
+
+print("Correlation of log(MiscVal) to residuals of `log(SalePrice)` ~ `Win(LotArea)`")
+print(cor(x = val_train_Xy$`log(MiscVal)`, y = val_train_Xy$resids))
+
+ggplot(val_train_Xy, aes(x = `log(MiscVal)`, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ylab(label = "`log(SalePrice)` ~ `Win(LotArea)`")
+
+df = filter(val_train_Xy, MiscVal != 0)
+
+print("Exluding MiscVal 0s:")
+print(cor(x = df$`log(MiscVal)`, y = df$resids))
+
+ggplot(df, aes(x = `log(MiscVal)`, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ylab(label = "`log(SalePrice)` ~ `Win(LotArea)`")
+
+
+val_train_Xy$resids = lm(
+  `log(SalePrice)` ~ `log10(log10(LotArea))`,
+  val_train_Xy
+)$residuals
+
+print("Correlation of log(MiscVal) to residuals of `log(SalePrice)` ~ `log10(log10(LotArea))`")
+print(cor(x = val_train_Xy$`log(MiscVal)`, y = val_train_Xy$resids))
+
+ggplot(val_train_Xy, aes(x = `log(MiscVal)`, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ylab(label = "`log(SalePrice)` ~ `log10(log10(LotArea))`")
+
+df = filter(val_train_Xy, MiscVal != 0)
+
+print("Exluding MiscVal 0s:")
+print(cor(x = df$`log(MiscVal)`, y = df$resids))
+
+ggplot(df, aes(x = `log(MiscVal)`, y = resids)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  ylab(label = "`log(SalePrice)` ~ `log10(log10(LotArea))`")
+```
+
+After factoring in Lot Area, there's still some correlation between MiscVal and the target once 0s are removed. It may still be worth keeping. We'll let modeling suss that out.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = select(
+  val_train_Xy, -c('MiscVal.bin', 'MiscVal.bin.fact', 'log2(MiscVal)')
+  )
+```
+
+## MoSold, YrSold
+
+[Back to top.](#top)
+
+MoSold somewhat normally distributed around June/July. Conventional wisdom says that summer sales are higher in volume and price, but the data don't bear that out for price.
+
+Records go from January 2006 through July 2010, so August-December are underrepresented by roughly 20%.
+
+YrSold pretty uniform (about 140-160) except for 2010 which ended in July in this set.
+
+Interesting spike in sales in Spring 2010. Foreclosures coming onto market?
+
+### Set to Factors: MoSold, YrSold
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate('MoSold.fact' = factor(MoSold)) %>%
+  mutate('YrSold.fact' = factor(YrSold, ordered = T))
+
+x = 'MoSold.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+
+
+x = 'YrSold.fact'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+## SoldDate
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy = val_train_Xy %>%
+  mutate(
+    SoldDate = as.Date(
+      paste(
+        as.character(YrSold),
+        as.character(MoSold),
+        '15',
+        sep = '/'
+      ),
+      format = '%Y/%m/%d'
+    )
+  )
+
+ggplot(val_train_Xy, aes(x = SoldDate)) +
+  geom_bar()
+
+x = 'SoldDate'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+
+num_feats = colnames(select(val_train_Xy, where(is.numeric)))
+x_lst = c('SoldDate')
+# 
+# df = get_cors(
+#   data = filter(
+#     select(val_train_Xy, all_of(num_feats)),
+#     !is.na(.data[[x]])
+#   ),
+#   x_lst = x_lst,
+#   feats = num_feats
+# )
+# df
+# print("Summary of absolute values of Pearson's Rs:")
+# df = abs(df)
+# summary(abs(df))
+# 
+# df = melt(df)
+# ggplot(df, aes(x = variable, y = value)) +
+#   geom_boxplot(notch = T) +
+#   ylab(label = 'Absolute Value of Correlation to Other Features')
+
+y_lst = c('log(SalePrice)')
+plot_scat_pairs(df = val_train_Xy, x = x, y_lst = y_lst)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot(
+  val_train_Xy,
+  aes(x = SoldDate, y = `log(SalePrice)`)
+) +
+  geom_point() +
+  geom_smooth() +
+  geom_smooth(method = 'lm', color = 'Yellow') +
+  facet_grid(rows = vars(SaleCondition), cols = vars(SaleType))
+```
+
+None of date seems to matter in this set. Drop it, but no yet.
+
+## SaleType
+
+[Back to top.](#top)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'SaleType'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+<a id="saletypeDate"></a>
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = val_train_Xy[val_train_Xy$SaleType %in% c('WD', 'New', 'COD'), ]
+gg = ggplot(df, aes(x = SaleType))
+
+gg + geom_bar() +
+  facet_grid(rows = vars(MoSold), cols = vars(YrSold)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+gg + geom_bar(position = 'dodge', aes(fill = factor(YrSold)))
+
+ggplot(df, aes(color = SaleType, x = SoldDate)) +
+  geom_freqpoly()
+
+# ggplot(df, aes(x = SaleType, y = SalePrice)) +
+#   geom_col(position = 'dodge', aes(fill = factor(YrSold), stat = 'mean'))
+
+ggplot(df, aes(x = SaleType, y = `log(SalePrice)`)) +
+  geom_boxplot(position = 'dodge', notch = T, aes(color = factor(YrSold)))
+```
+
+You can see new home sales drop off with the crash. Court officer deeds also ticked up, possibly due to more foreclosures. But, there didn't seem to be a significant difference in sale prices year over year within sale type groups, except between new sales in 2007and 2010 which is not fully represented in this set.
+
+## SaleCondition
+
+[Back to top.](#top)
+
+592 normal, 61 partial (home not completed when last assessed), 43 abnormal (trade, foreclosure, short sale), 11 family. I'm guessing a family sale will be lower in price typically, as will foreclosures and shortsales. I'm not sure what to make of partials; the house wasn't fully built when assessed, so the price may be askew?
+
+Surprisingly, abnormal sales didn't seem to vary with the crash. Ames appears to have fared well.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+x = 'SaleCondition'
+y = 'SalePrice'
+summarize_by(data = val_train_Xy, x = x, y = y)
+y = 'log(SalePrice)'
+sum_and_trans_fact(data = val_train_Xy, x = x, y = y)
+
+p_vals = get_signif_levels(data = val_train_Xy, x = x, z = y, min_n = 30)
+
+heatmap.2(
+    x = as.matrix(p_vals$pval_df),
+    scale = 'none',
+    Rowv = F,
+    Colv = F,
+    dendrogram = 'none',
+    cellnote = format(p_vals$pval_df, digits = 2),
+    notecex = 0.75,
+    notecol = 'black',
+    main = paste(y, 'p-values'),
+    key = F
+  )
+
+print(
+    paste(
+      "Levels w/ significantly different",
+      y,
+      "than another level:"
+    )
+  )
+print(p_vals$signif_levels)
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+df = filter(val_train_Xy, SaleCondition %in% c('Normal', 'Abnorml', 'Partial'))
+
+gg = ggplot(df, aes(x = SaleCondition))
+
+gg + geom_bar() +
+  facet_grid(rows = vars(MoSold), cols = vars(YrSold)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+gg + geom_bar(aes(fill = factor(YrSold)), position = 'dodge')
+
+ggplot(df, aes(x = SoldDate, color = SaleCondition)) +
+  geom_freqpoly()
+
+ggplot(df, aes(x = SaleCondition, y = `log(SalePrice)`)) +
+  geom_boxplot(position = 'dodge', notch = T, aes(color = factor(YrSold)))
+```
+
+Bearing in mind that 2010 is not a complete year in this set, partial sales dropped as normal sales increased. This trend may be explained by developers finishing/halting their projects. Filtering/grouping by year built and/or neighborhood might help check this, but I'll skip it for the sake of finishing.
+
+Fall and winter months seemed to be where the bulk of these increases in normal sales fell each year.
+
+
+## Overall Correlations
+
+[Back to top.](#top)
+
+To wrap up this notebook, and as a preliminary gauge on how well I have prepared the data for ML, mainly for linear regression, I'll check out how correlations have changed. Have my variables increased in correlation in general? Have they increased in correlation to the target variable?
+
+Increased correlations to the target variable have obvious benefits. Increased correlations between predictor variables will help clarify which variables may overlap in their predictive power and redundantly overweight the same underlying information.
+
+I made a lot of new features, dropping some along the way. In cases where a Winsorized version seemed a good option, I also kept the scale-transformed version where applicable. For example, I kept both log(SalePrice) and Win(log(SalePrice)). Winsorization will help a straightforward linear regression without interactions. But, Winsorization will undercut KNN's ability to cluster multivariate outliers and similarly RF's ability to group by extremes. That said, Winsorization will reduce the chances of overfit in all three. All that is to say that there are redundant new features.
+
+I can't think of a quick and dirty way to view this without getting skewed results or busy heatmaps, other than to make a table of all the variables' correlations to the target variable which isn't very easily digested either. The slow and tedious way would be to iteratively "manually" (to some extent) select like variables for correlation within their experimental group. I'm not goin to do that.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+val_train_Xy_numeric = select(
+  val_train_Xy, # Reorder for easier comparison.
+  c('SalePrice', 'log(SalePrice)', 'Win(log(SalePrice))', "LotFrontage",
+    "log10(LotFrontage)", "Win(log10(LotFrontage))", "Win(LotFrontage)",
+    "LotArea", "log10(log10(LotArea))", "Win(LotArea)", "OverallQual_int",
+    "OverallCond_int", "YearBuilt", "sqrt(Age)", "YearRemodAdd", "MasVnrArea",
+    "cbrt(MasVnrArea)", "Win(cbrt(MasVnrArea))", "BsmtFinSF1", "BsmtFinSF2",
+    "BsmtUnfSF", "cbrt(BsmtUnfSF)", "square(log(TotalBsmtSF))",
+    "Win(square(log(TotalBsmtSF)))", "TotalBsmtSF", "TotalBsmtFinSF",
+    "sqrt(TotalBsmtFinSF)", "Win(sqrt(TotalBsmtFinSF))", "X2ndFlrSF",
+    "X2ndFlr.bin", "GrLivArea", "square(log2(GrLivArea))", 
+    "Win(square(log2(GrLivArea)))", "TotBaths", "Win(TotBaths)",
+    "BedroomAbvGr", "Win(BedroomAbvGr)", "TotRmsAbvGrd", "Win(BedroomAbvGr)",
+    "TotRmsAbvGrd", "Win(TotRmsAbvGrd)", "Fireplaces.bin", "GarageCars",
+    "Win(GarageCars)", "WoodDeckSF", "cbrt(WoodDeckSF)",
+    "Win(cbrt(WoodDeckSF))", "OpenPorchSF", "OpenPorch.bin", "EnclosedPorch",
+    "ScreenPorch", "cbrt(ScreenPorch)", "ScreenPorch.bin", "MiscVal",
+    "log(MiscVal)", "Win(log(MiscVal))", "MoSold", "YrSold")
+)
+
+ggcorr(val_train_Xy_numeric)
+
+cor_mtx = cor(val_train_Xy_numeric, use = 'pairwise.complete.obs')
+
+target_vars_vec = c('SalePrice', 'log(SalePrice)', 'Win(log(SalePrice))')
+
+cor_mtx_melted = melt(cor_mtx)
+sales_cor_mtx_melted = filter(
+  cor_mtx_melted,
+  Var1 %in% target_vars_vec & !(Var2 %in% target_vars_vec)
+)
+
+ggplot(sales_cor_mtx_melted, aes(x = Var1, y = Var2)) +
+  geom_tile(aes(fill = value))
+
+dcast(sales_cor_mtx_melted, formula = Var2 ~ Var1)
+
+fenced_jbv(
+  data = sales_cor_mtx_melted,
+  x = 'Var1',
+  y = 'value',
+  jit_h = 0
+)
+```
+
+# Serialize Dataframe for Storage
+
+[Back to top.](#top)
+
+I'll write it to an RDS file so I can verify that my final engineering script duplicates this process. I'll verify in the next notebook before I start modeling.
+
+```{r echo=TRUE, warning=FALSE, message=FALSE}
+val_train_Xy$Id = id_col
+
+saveRDS(val_train_Xy, 'data/eda_val_train_Xy.rds')
+head(readRDS('data/eda_val_train_Xy.rds'))
+```
